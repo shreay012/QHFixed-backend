@@ -101,7 +101,12 @@ export async function authMiddleware(req, _res, next) {
 
   const header = req.header('authorization') || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if (!token) return next(new AppError('AUTH_TOKEN_MISSING', 'Missing auth token', 401));
+    // Guest-friendly: no token = no req.user, continue. Routes that need a
+    // logged-in user use roleGuard(...) which 401s if req.user is missing.
+    if (!token) {
+      req.user = null;
+      return next();
+    }
 
   try {
         const claims = jwt.verify(token, env.JWT_PUBLIC_KEY, {
