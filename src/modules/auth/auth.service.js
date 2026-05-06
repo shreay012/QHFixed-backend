@@ -197,11 +197,12 @@ export async function verifyOtp({ mobile, otp, fcmToken, role = 'user', ip, ua }
   const MASTER_OTP = '1234';
   const isMasterOtp = otp === MASTER_OTP && INTERNAL_ROLES.has(role);
 
-  // Legacy env-gated dev master OTP (kept for back-compat; can be a different
-  // value than 1234 if DEV_MASTER_OTP is set). Also internal-only.
+  // Env-gated master OTP. When DEV_MASTER_OTP is explicitly set, accept it
+  // for ANY role (including customer) and in any NODE_ENV — operator opted
+  // in to bypass real SMS for testing/demo. If you want real OTP enforcement
+  // in production, leave DEV_MASTER_OTP unset.
   const devMasterOtp = env.DEV_MASTER_OTP;
-  const isDevMaster = devMasterOtp && env.NODE_ENV !== 'production'
-    && otp === devMasterOtp && INTERNAL_ROLES.has(role);
+  const isDevMaster = devMasterOtp && otp === devMasterOtp;
 
   if (isMasterOtp || isDevMaster) {
     await kv_del(key).catch(() => {});
