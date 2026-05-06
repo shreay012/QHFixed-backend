@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import * as bookingService from '../booking/booking.service.js';
@@ -43,7 +43,7 @@ async function handlePaymentSuccess(orderId, paymentId, eventId, eventType) {
 }
 
 async function handlePaymentFailed(orderId, eventId, eventType) {
-  await getDb().collection('payments').updateOne(
+  await getDualDb().collection('payments').updateOne(
     { orderId },
     {
       $set: { status: 'failed', updatedAt: new Date() },
@@ -84,7 +84,7 @@ export async function paymentWebhookHandler(req, res) {
     const payload = event.payload || {};
 
     // Dedup: if we've already processed this event, return 200 immediately
-    const existing = await getDb().collection('payments').findOne({
+    const existing = await getDualDb().collection('payments').findOne({
       'rawWebhookEvents.id': eventId,
     });
     if (existing) return res.json({ ok: true, dedup: true });
@@ -137,7 +137,7 @@ export async function stripeWebhookHandler(req, res) {
     const type = event.type;
 
     // Dedup
-    const existing = await getDb().collection('payments').findOne({
+    const existing = await getDualDb().collection('payments').findOne({
       'rawWebhookEvents.id': eventId,
     });
     if (existing) return res.json({ ok: true, dedup: true });

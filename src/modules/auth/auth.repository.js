@@ -1,4 +1,4 @@
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { logger } from '../../config/logger.js';
 
@@ -43,7 +43,7 @@ function memRevokeSession(sessionId) { const s = memSessions.get(String(sessionI
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 function col(name) {
-  try { return getDb().collection(name); }
+  try { return getDualDb().collection(name); }
   catch { return null; }
 }
 

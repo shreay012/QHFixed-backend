@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { validate } from '../../middleware/validate.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 
 const r = Router();
 
@@ -23,7 +23,7 @@ const contactSchema = z
 
 // Public
 r.post('/contact-us', validate(contactSchema), asyncHandler(async (req, res) => {
-  await getDb().collection('contact_submissions').insertOne({
+  await getDualDb().collection('contact_submissions').insertOne({
     ...req.body, createdAt: new Date(),
   });
   res.json({ success: true, message: 'Thanks, we will get back to you.' });

@@ -29,7 +29,7 @@ import { ObjectId } from 'mongodb';
 import { adminGuard, notViewer } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
@@ -39,8 +39,8 @@ import { env } from '../../config/env.js';
 
 const r = Router();
 
-const postsCol = () => getDb().collection('blog_posts');
-const catsCol  = () => getDb().collection('blog_categories');
+const postsCol = () => getDualDb().collection('blog_posts');
+const catsCol  = () => getDualDb().collection('blog_categories');
 
 // ── Schemas ────────────────────────────────────────────────────────────────
 

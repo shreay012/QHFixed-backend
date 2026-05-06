@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../config/db.js';
+import { getDb, getDualDb } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { emitTo } from '../socket/index.js';
 import { QUEUES, enqueueJob } from './index.js';
@@ -16,8 +16,8 @@ import { QUEUES, enqueueJob } from './index.js';
  * Existing enqueueNotification() is preserved for backward compatibility.
  */
 
-const col = () => getDb().collection('notifications');
-const usersCol = () => getDb().collection('users');
+const col = () => getDualDb().collection('notifications');
+const usersCol = () => getDualDb().collection('users');
 
 /**
  * BullMQ job handler for notifications

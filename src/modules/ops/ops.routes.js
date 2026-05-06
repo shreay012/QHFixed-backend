@@ -12,7 +12,7 @@ import { Router } from 'express';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { PERMS } from '../../config/rbac.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { redis } from '../../config/redis.js';
 import { getIO } from '../../socket/index.js';
 
@@ -20,7 +20,7 @@ const r = Router();
 r.use(adminGuard);
 r.use(permGuard(PERMS.DASHBOARD_READ));
 
-const col = (name) => getDb().collection(name);
+const col = (name) => getDualDb().collection(name);
 
 // SLA thresholds (minutes) — configurable via feature flags later
 const SLA = {

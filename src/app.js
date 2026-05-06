@@ -14,8 +14,16 @@ import { metricsMiddleware, metricsHandler } from './config/metrics.js';
 import { sanitizeMongo, sanitizeXss } from './middleware/sanitize.middleware.js';
 import { geoMiddleware } from './modules/i18n/geo.middleware.js';
 import cookieParser from 'cookie-parser';
+import { bindDualCol } from './config/db.js';
+import { dualCol } from './data/dualCollection.js';
 import routes from './routes.js';
 import { paymentWebhookHandler, stripeWebhookHandler } from './modules/payment/payment.webhook.js';
+
+// Wire the dual-driver collection adapter into getDualDb() — see config/db.js.
+// Before this binding, getDualDb() falls back to native Mongo. With it, any
+// caller of getDualDb().collection(name) reaches the Mongo↔Postgres router
+// gated by env.PG_DRIVER_<TABLE>.
+bindDualCol(dualCol);
 
 export function buildApp() {
     const app = express();

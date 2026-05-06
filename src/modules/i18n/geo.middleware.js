@@ -24,7 +24,7 @@
  * The `countries` MongoDB collection is loaded once every 5 minutes and merged
  * on top of the canonical COUNTRY_CONFIG (so admin overrides via DB win).
  */
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { getCountryConfig, DEFAULT_COUNTRY_CODE } from '../../config/country.config.js';
 
@@ -42,7 +42,7 @@ async function loadCountryConfigs() {
   if (countryConfigCache && now < cacheExpiry) return countryConfigCache;
 
   try {
-    const docs = await getDb().collection('countries').find({ active: true }).toArray();
+    const docs = await getDualDb().collection('countries').find({ active: true }).toArray();
     if (docs.length > 0) {
       const map = {};
       for (const d of docs) map[d.code] = d;

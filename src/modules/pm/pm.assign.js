@@ -1,11 +1,11 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { logger } from '../../config/logger.js';
 import { enqueueNotification } from '../notification/notification.service.js';
 import { emitTo } from '../../socket/index.js';
 
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
 
 /**
  * Notify admin users with an in-app + push notification + role_admin socket event.

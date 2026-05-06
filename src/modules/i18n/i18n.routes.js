@@ -19,7 +19,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -32,9 +32,9 @@ import * as currenciesRepo from '../../data/repos/currencies.js';
 
 const r = Router();
 
-const countriesCol = () => getDb().collection('countries');
-const currenciesCol = () => getDb().collection('currencies');
-const translationsCol = () => getDb().collection('translations');
+const countriesCol = () => getDualDb().collection('countries');
+const currenciesCol = () => getDualDb().collection('currencies');
+const translationsCol = () => getDualDb().collection('translations');
 
 /* ─── Public endpoints ───────────────────────────────────────── */
 

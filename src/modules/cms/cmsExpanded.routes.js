@@ -17,7 +17,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -29,10 +29,10 @@ import { env } from '../../config/env.js';
 
 const r = Router();
 
-const pagesCol = () => getDb().collection('cms_pages');
-const bannersCol = () => getDb().collection('cms_banners');
-const templatesCol = () => getDb().collection('notification_templates');
-const articlesCol = () => getDb().collection('cms_articles');
+const pagesCol = () => getDualDb().collection('cms_pages');
+const bannersCol = () => getDualDb().collection('cms_banners');
+const templatesCol = () => getDualDb().collection('notification_templates');
+const articlesCol = () => getDualDb().collection('cms_articles');
 
 /* ═══════════════════════════════════════════════════════════════
    PAGES

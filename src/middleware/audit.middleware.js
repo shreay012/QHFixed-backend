@@ -1,7 +1,7 @@
 // Audit-log middleware for admin writes.
 // Captures POST/PUT/PATCH/DELETE on /api/admin/* with actor, path, params,
 // status code, and a sanitized request body. Stored in `audit_logs`.
-import { getDb } from '../config/db.js';
+import { getDb, getDualDb } from '../config/db.js';
 import { logger } from '../config/logger.js';
 
 const SENSITIVE_KEYS = ['password', 'token', 'otp', 'refreshToken', 'fcmToken', 'razorpay_signature'];
@@ -44,7 +44,7 @@ export function auditAdmin(req, res, next) {
       ua: req.header('user-agent') || '',
       durationMs: Date.now() - startedAt.getTime(),
     };
-    getDb().collection('audit_logs').insertOne(entry).catch((e) => {
+    getDualDb().collection('audit_logs').insertOne(entry).catch((e) => {
       logger.warn({ err: e }, 'audit insert failed');
     });
   });

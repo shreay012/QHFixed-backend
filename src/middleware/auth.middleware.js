@@ -4,7 +4,7 @@ import { AppError } from '../utils/AppError.js';
 import { redis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import { setSentryUser } from '../config/sentry.js';
-import { getDb } from '../config/db.js';
+import { getDb, getDualDb } from '../config/db.js';
 
 // Module-level LRU for the lazy `country` lookup performed when an old JWT
 // (issued before the multi-country rollout) doesn't carry the country claim.
@@ -19,7 +19,7 @@ async function lazyResolveCountry(userId, sessionId) {
   const hit = SESSION_COUNTRY_CACHE.get(cacheKey);
   if (hit && hit.expiresAt > Date.now()) return hit.country;
   try {
-    const u = await getDb().collection('users').findOne(
+    const u = await getDualDb().collection('users').findOne(
       { _id: new ObjectId(userId) },
       { projection: { country: 1 } },
     );

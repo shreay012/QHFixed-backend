@@ -4,7 +4,7 @@ import { ObjectId } from 'mongodb';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { idempotencyGetOrSet, acquireLock, releaseLock } from '../../utils/idempotency.js';
@@ -30,8 +30,8 @@ function computeTax(subtotal, country) {
 }
 
 const r = Router();
-const jobsCol = () => getDb().collection('jobs');
-const servicesCol = () => getDb().collection('services');
+const jobsCol = () => getDualDb().collection('jobs');
+const servicesCol = () => getDualDb().collection('services');
 
 // Resolve user's country from request (cookie/header/locale → IN fallback).
 function resolveCountry(req) {
@@ -137,7 +137,7 @@ r.post('/pricing', validate(pricingSchema), asyncHandler(async (req, res) => {
 
   // Overlay geo_pricing so the rate matches what the admin set per-country.
   try {
-    const geo = await getDb().collection('geo_pricing').findOne(
+    const geo = await getDualDb().collection('geo_pricing').findOne(
       { serviceId: svc._id, country },
       { projection: { basePrice: 1, currency: 1 } },
     );
@@ -239,7 +239,7 @@ r.post('/', roleGuard(['user', 'admin']), asyncHandler(async (req, res) => {
     let { hourly, currency } = resolveServicePrice(svc, country);
     // Overlay geo_pricing for per-country admin-set rate
     try {
-      const geo = await getDb().collection('geo_pricing').findOne(
+      const geo = await getDualDb().collection('geo_pricing').findOne(
         { serviceId: svc._id, country },
         { projection: { basePrice: 1, currency: 1 } },
       );

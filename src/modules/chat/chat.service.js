@@ -1,12 +1,12 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { emitTo } from '../../socket/index.js';
 import { enqueueNotification } from '../notification/notification.service.js';
 
 // COLLECTION_UNIFIED_FIX_V1: align with admin/pm/resource which all use 'chat'.
-const col = () => getDb().collection('chat');
-const usersCol = () => getDb().collection('users');
+const col = () => getDualDb().collection('chat');
+const usersCol = () => getDualDb().collection('users');
 
 async function attachSender(messages) {
   if (!messages || !messages.length) return messages;
@@ -50,7 +50,7 @@ export async function canJoinRoom(user, roomId) {
   if (roomId.startsWith('booking_')) {
     const bookingId = roomId.slice('booking_'.length);
     if (!/^[0-9a-f]{24}$/i.test(bookingId)) return false;
-    const booking = await getDb().collection('bookings').findOne(
+    const booking = await getDualDb().collection('bookings').findOne(
       { _id: new ObjectId(bookingId) },
       { projection: { userId: 1, pmId: 1, resourceId: 1, country: 1 } },
     );
@@ -123,7 +123,7 @@ export async function persistAndBroadcast({ sender, roomId, msgType = 0, msg = '
   // haven't explicitly joined the chat room still receive the message.
   if (bookingId) {
     try {
-      const b = await getDb().collection('bookings').findOne(
+      const b = await getDualDb().collection('bookings').findOne(
         { _id: new ObjectId(bookingId) },
         { projection: { userId: 1, pmId: 1, resourceId: 1 } },
       );
@@ -159,7 +159,7 @@ async function notifyOtherParticipants(roomId, sender, message) {
     const bookingIdStr = roomId.slice('booking_'.length);
     if (/^[0-9a-f]{24}$/i.test(bookingIdStr)) {
       try {
-        const b = await getDb().collection('bookings').findOne(
+        const b = await getDualDb().collection('bookings').findOne(
           { _id: new ObjectId(bookingIdStr) },
           { projection: { userId: 1, pmId: 1, resourceId: 1 } },
         );

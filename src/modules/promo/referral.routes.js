@@ -18,7 +18,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -26,10 +26,10 @@ import { paginate, buildMeta } from '../../utils/pagination.js';
 import { PERMS } from '../../config/rbac.js';
 
 const r = Router();
-const codesCol = () => getDb().collection('promo_codes');
-const commissionsCol = () => getDb().collection('affiliate_commissions');
-const redemptionsCol = () => getDb().collection('promo_redemptions');
-const usersCol = () => getDb().collection('users');
+const codesCol = () => getDualDb().collection('promo_codes');
+const commissionsCol = () => getDualDb().collection('affiliate_commissions');
+const redemptionsCol = () => getDualDb().collection('promo_redemptions');
+const usersCol = () => getDualDb().collection('users');
 
 function generateReferralCode(userId) {
   const suffix = String(userId).slice(-6).toUpperCase();

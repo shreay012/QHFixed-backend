@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { sqs, sns } from '../../config/aws.js';
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
 import { PublishCommand } from '@aws-sdk/client-sns';
@@ -7,8 +7,8 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { emitTo } from '../../socket/index.js';
 
-const col = () => getDb().collection('notifications');
-const usersCol = () => getDb().collection('users');
+const col = () => getDualDb().collection('notifications');
+const usersCol = () => getDualDb().collection('users');
 
 /**
  * Enqueue a notification.

@@ -6,7 +6,7 @@ import { parse as csvParse } from 'csv-parse/sync';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { publish } from '../../config/redis.js';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -22,7 +22,7 @@ import {
 import { computeQuote } from './pricing.service.js';
 
 const r = Router();
-const col = () => getDb().collection('services');
+const col = () => getDualDb().collection('services');
 
 const CACHE_ALL = CACHE_KEYS.SERVICES_LIST;
 const CACHE_ONE = CACHE_KEYS.SERVICES_DETAIL;
@@ -171,7 +171,7 @@ r.get('/', asyncHandler(async (req, res) => {
   let geoMap = new Map();
   if (ids.length > 0) {
     try {
-      const geoRows = await getDb().collection('geo_pricing')
+      const geoRows = await getDualDb().collection('geo_pricing')
         .find({ serviceId: { $in: ids }, country }, { projection: { serviceId: 1, basePrice: 1, currency: 1 } })
         .toArray();
       geoMap = new Map(geoRows.map((g) => [String(g.serviceId), g]));
@@ -243,7 +243,7 @@ r.get('/:id', asyncHandler(async (req, res) => {
   // This ensures HoursStep and SummaryStep see the correct price without a
   // second round-trip to /geo-pricing/price/:id.
   try {
-    const geo = await getDb().collection('geo_pricing').findOne(
+    const geo = await getDualDb().collection('geo_pricing').findOne(
       { serviceId: svc._id, country },
       { projection: { basePrice: 1, currency: 1 } },
     );

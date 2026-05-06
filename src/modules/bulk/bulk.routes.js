@@ -18,7 +18,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -29,8 +29,8 @@ const r = Router();
 r.use(adminGuard);
 r.use(auditAdmin);
 
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -131,7 +131,7 @@ r.post('/refund-trigger', permGuard(PERMS.REFUND_APPROVE), validate(z.object({
   reason: z.string().min(5).max(500),
 })), asyncHandler(async (req, res) => {
   const { bookingIds, reason } = req.body;
-  const refundsCol = getDb().collection('refunds');
+  const refundsCol = getDualDb().collection('refunds');
   const now = new Date();
 
   const docs = bookingIds.map((bookingId) => ({

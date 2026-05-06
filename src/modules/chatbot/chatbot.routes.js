@@ -16,7 +16,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { redis } from '../../config/redis.js';
 import { logger } from '../../config/logger.js';
@@ -24,8 +24,8 @@ import { env } from '../../config/env.js';
 import { getMeili, isMeiliReady } from '../../config/meilisearch.js';
 
 const r = Router();
-const articlesCol = () => getDb().collection('cms_articles');
-const faqsCol = () => getDb().collection('cms_content');
+const articlesCol = () => getDualDb().collection('cms_articles');
+const faqsCol = () => getDualDb().collection('cms_content');
 
 const CHATBOT_RATE_LIMIT = 10; // messages per minute per user
 
@@ -164,7 +164,7 @@ r.post('/message', validate(z.object({
   }
 
   // Log interaction (for training / quality review)
-  await getDb().collection('chatbot_logs').insertOne({
+  await getDualDb().collection('chatbot_logs').insertOne({
     userId,
     message,
     lang,
