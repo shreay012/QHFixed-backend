@@ -2,9 +2,16 @@ import { z } from 'zod';
 
 // FE sends "customer" (per platform contract); internal canonical role is "user".
 // Accept both, normalize to "user" before downstream code.
+//
+// `country_admin` added for multi-country RBAC rollout — keep this list in
+// sync with src/config/rbac.js ROLES enum.
 const role = z.preprocess(
   (v) => (v === 'customer' ? 'user' : v),
-  z.enum(['user', 'pm', 'admin', 'resource', 'super_admin', 'ops', 'finance', 'support', 'growth', 'viewer']).default('user'),
+  z.enum([
+    'user', 'pm', 'admin', 'resource',
+    'super_admin', 'country_admin',
+    'ops', 'finance', 'support', 'growth', 'viewer',
+  ]).default('user'),
 );
 
 // E.164 phone format: optional `+`, country code (1-3 digits), then 4-14
