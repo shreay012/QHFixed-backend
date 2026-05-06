@@ -157,6 +157,8 @@ async function ensureIndexes(db) {
     // Users: country-scoped queries and analytics
     db.collection('users').createIndex({ country: 1, role: 1, createdAt: -1 }),
     db.collection('users').createIndex({ country: 1, 'meta.status': 1 }),
+    // Country-aware PM/Resource picker (autoAssignPm, pickAvailableResource)
+    db.collection('users').createIndex({ role: 1, country: 1, 'meta.status': 1 }),
 
     // Services: country-scoped catalogue browsing
     db.collection('services').createIndex({ country: 1, active: 1, category: 1 }),
@@ -164,6 +166,14 @@ async function ensureIndexes(db) {
 
     // Bookings: country-scoped analytics and ops queries
     db.collection('bookings').createIndex({ country: 1, status: 1, createdAt: -1 }),
+    // Country-scoped PM panel: listing assigned bookings, sorted recent-first
+    db.collection('bookings').createIndex({ country: 1, pmId: 1, status: 1, createdAt: -1 }),
+    // Country-scoped Resource panel: listing assigned bookings
+    db.collection('bookings').createIndex({ country: 1, resourceId: 1, status: 1 }),
+    // Country-scoped Jobs (parallel to bookings)
+    db.collection('jobs').createIndex({ country: 1, status: 1, createdAt: -1 }),
+    db.collection('jobs').createIndex({ country: 1, pmId: 1, status: 1, createdAt: -1 }),
+    db.collection('jobs').createIndex({ country: 1, resourceId: 1, status: 1 }),
 
     // Payments: booking lookup + country analytics + webhook dedup
     db.collection('payments').createIndex({ bookingId: 1 }),

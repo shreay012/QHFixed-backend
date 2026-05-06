@@ -147,9 +147,11 @@ async function sendSms(mobile, body) {
   }
 }
 
-function signAccessToken({ userId, role, sessionId }) {
+function signAccessToken({ userId, role, sessionId, country = null }) {
   return jwt.sign(
-    { sub: userId, role, sessionId },
+    // `country` is additive — old tokens without this claim still verify.
+    // null is allowed (super_admin / customer / staff without country).
+    { sub: userId, role, sessionId, country: country ?? null },
     env.JWT_PRIVATE_KEY,
     {
       algorithm: env.JWT_ALGORITHM,
@@ -225,7 +227,12 @@ export async function verifyOtp({ mobile, otp, fcmToken, role = 'user', ip, ua }
   const expiresAt = new Date(Date.now() + refreshTtlMs());
   const session = await repo.createSession({ userId, refreshTokenHash, ip, ua, expiresAt });
 
-  const token = signAccessToken({ userId, role: user.role, sessionId: String(session._id) });
+  const token = signAccessToken({
+    userId,
+    role: user.role,
+    sessionId: String(session._id),
+    country: user.country ?? null,
+  });
 
   return {
     token,
@@ -270,7 +277,12 @@ export async function refresh({ refreshToken, sessionId }) {
   const user = await repo.findUserById(session.userId);
   if (!user) throw new AppError('RESOURCE_NOT_FOUND', 'User not found', 404);
 
-  const token = signAccessToken({ userId: String(user._id), role: user.role, sessionId });
+  const token = signAccessToken({
+    userId: String(user._id),
+    role: user.role,
+    sessionId,
+    country: user.country ?? null,
+  });
   return { token, user: sanitizeUser(user) };
 }
 

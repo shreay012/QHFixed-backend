@@ -1,8 +1,35 @@
 import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
 import { AppError } from '../utils/AppError.js';
 import { redis } from '../config/redis.js';
 import { env } from '../config/env.js';
 import { setSentryUser } from '../config/sentry.js';
+import { getDb } from '../config/db.js';
+
+// Module-level LRU for the lazy `country` lookup performed when an old JWT
+// (issued before the multi-country rollout) doesn't carry the country claim.
+// One Mongo lookup per session, then cached for the session's life.
+const SESSION_COUNTRY_CACHE = new Map();
+const SESSION_COUNTRY_TTL_MS = 15 * 60 * 1000; // 15 min — same as access token TTL
+
+const ROLES_NEEDING_COUNTRY = new Set(['country_admin', 'pm', 'resource']);
+
+async function lazyResolveCountry(userId, sessionId) {
+  const cacheKey = sessionId || `u:${userId}`;
+  const hit = SESSION_COUNTRY_CACHE.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) return hit.country;
+  try {
+    const u = await getDb().collection('users').findOne(
+      { _id: new ObjectId(userId) },
+      { projection: { country: 1 } },
+    );
+    const country = u?.country ?? null;
+    SESSION_COUNTRY_CACHE.set(cacheKey, { country, expiresAt: Date.now() + SESSION_COUNTRY_TTL_MS });
+    return country;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * In-process LRU for blocklist lookups.
@@ -123,10 +150,19 @@ export async function authMiddleware(req, _res, next) {
                 }
                 // cached === false → fast path, no Redis hit
         }
+        let country = claims.country ?? null;
+        // Backwards compat: tokens issued before multi-country rollout have
+        // no `country` claim. For roles that need country, do a one-time
+        // Mongo lookup cached per-session.
+        if (!country && ROLES_NEEDING_COUNTRY.has(claims.role)) {
+          country = await lazyResolveCountry(claims.sub, claims.sessionId);
+        }
+
         req.user = {
                 id: claims.sub,
                 role: claims.role,
                 sessionId: claims.sessionId,
+                country,
         };
         setSentryUser(req.user);
         next();

@@ -76,6 +76,15 @@ const schema = z.object({
   // Should be empty/unset in production.
   DEV_MASTER_OTP: z.string().optional(),
 
+  // Multi-country RBAC rollout flag. Controls how the countryScopeMiddleware
+  // behaves; lets us land Phase 0/1 changes without enforcing them yet.
+  //   off          — middleware no-ops; req.scope set but never consumed
+  //   shadow       — middleware sets req.scope; routes log "would have filtered" but don't
+  //   enforce-new  — country_admin/pm/resource fully enforced; legacy admin role still global
+  //   enforce-all  — legacy admin without country becomes 403; full lockdown
+  // Default 'off' so deploying this code is a no-op until we flip the flag.
+  COUNTRY_SCOPE_MODE: z.enum(['off', 'shadow', 'enforce-new', 'enforce-all']).default('off'),
+
   // Company / supplier details printed on every invoice. All optional —
   // missing fields just render as blank in the PDF. Per-country tax
   // registration numbers are picked up by lib/invoice/renderInvoicePdf.js
