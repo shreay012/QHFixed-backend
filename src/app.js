@@ -6,6 +6,7 @@ import { logger } from './config/logger.js';
 import { env } from './config/env.js';
 import { requestIdMiddleware } from './middleware/requestId.middleware.js';
 import { authMiddleware } from './middleware/auth.middleware.js';
+import { countryScope } from './middleware/country-scope.middleware.js';
 import { rateLimit } from './middleware/rateLimit.middleware.js';
 import { errorMiddleware, notFoundMiddleware } from './middleware/error.middleware.js';
 import { sentryErrorHandler } from './config/sentry.js';
@@ -54,11 +55,17 @@ export function buildApp() {
   // mount so Express strips the prefix before matching against PUBLIC_PREFIXES
   // (e.g. /api/services → req.path becomes /services for the middleware).
   // Webhooks (/payments/webhook) are mounted at root above and bypass auth.
-  app.use('/api', authMiddleware, routes);
+  //
+  // countryScope runs after authMiddleware. With env.COUNTRY_SCOPE_MODE=off
+  // (default) it's a no-op that just sets req.scope = {mode:'off',filter:{}}
+  // — zero behaviour change. Flip the env to 'shadow' to log scope decisions
+  // without enforcing, then 'enforce-new' to actually filter for the new
+  // role hierarchy. See multi-country-rbac-plan.md §6 for full semantics.
+  app.use('/api', authMiddleware, countryScope, routes);
 
   // Back-compat: also expose routes at root for any internal/legacy callers
   // (Render direct URLs, health probes, mobile apps with old base URLs).
-  app.use(authMiddleware, routes);
+  app.use(authMiddleware, countryScope, routes);
 
   app.use(notFoundMiddleware);
     app.use(sentryErrorHandler());
