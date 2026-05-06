@@ -140,7 +140,10 @@ const MAPPERS = {
   countries: (d) => ({
     _id:             String(d._id),
     code:            d.code,
-    name:            d.name || { en: d.code },
+    // Mongo stores name as either a plain string ("India") or an i18n
+    // object ({ en, hi, ar, de }). Postgres column is JSONB — coerce
+    // strings into { en } so JSONB is always a valid object.
+    name:            (typeof d.name === 'string') ? { en: d.name } : (d.name || { en: d.code }),
     currency:        d.currency || null,
     supported_langs: d.supportedLangs || null,
     config:          d.config || null,
