@@ -85,6 +85,23 @@ const schema = z.object({
   // Default 'off' so deploying this code is a no-op until we flip the flag.
   COUNTRY_SCOPE_MODE: z.enum(['off', 'shadow', 'enforce-new', 'enforce-all']).default('off'),
 
+  // ── Postgres migration (strangler-fig) ──────────────────────────────
+  // Optional. When PG_URL is set, the new data-repo layer can dual-write
+  // and/or read from Postgres. When unset, every repo transparently uses
+  // Mongo. Per-table PG_DRIVER_* flags switch reads per collection.
+  // See docs: postgres-migration-plan.md
+  PG_URL: z.string().optional(),
+  PG_DRIVER_COUNTRIES:     z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_CURRENCIES:    z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_SERVICES:      z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_USERS:         z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_SESSIONS:      z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_BOOKINGS:      z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_JOBS:          z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_PAYMENTS:      z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DRIVER_NOTIFICATIONS: z.enum(['mongo', 'postgres']).default('mongo'),
+  PG_DUAL_WRITE: z.string().optional(), // comma-list of tables: "countries,services,users"
+
   // Company / supplier details printed on every invoice. All optional —
   // missing fields just render as blank in the PDF. Per-country tax
   // registration numbers are picked up by lib/invoice/renderInvoicePdf.js
