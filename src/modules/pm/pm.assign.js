@@ -8,29 +8,64 @@ const jobsCol = () => getDb().collection('jobs');
 const usersCol = () => getDb().collection('users');
 
 /**
- * Notify every admin user with an in-app + push notification.
- * Also emits a generic 'role_admin' socket room event for live admin UIs.
+ * Notify admin users with an in-app + push notification + role_admin socket event.
+ *
+ * Country-aware fan-out:
+ *   - super_admin always gets notified (global oversight)
+ *   - admin (legacy) — global, all of them get it (preserves existing behaviour)
+ *   - country_admin — only the one(s) for the booking's country (when `country`
+ *     is passed). When country is null/undefined, all country_admins get it
+ *     (legacy behaviour, e.g. for bootstrap notifications).
+ *
+ * @param {object} opts
+ * @param {string} opts.type
+ * @param {string} opts.title
+ * @param {string} opts.body
+ * @param {object} [opts.data]
+ * @param {string|null} [opts.country]  Restrict country_admin recipients
  */
-export async function notifyAdmins({ type = 'admin_alert', title, body, data = {} }) {
+export async function notifyAdmins({ type = 'admin_alert', title, body, data = {}, country = null }) {
   try {
     emitTo('role_admin', 'notification:new', { type, title, body, data, createdAt: new Date() });
+    if (country) emitTo(`role_country_admin_${country}`, 'notification:new', { type, title, body, data, createdAt: new Date() });
   } catch (e) {
     logger.warn({ err: e }, 'admin room emit failed');
   }
-  const admins = await usersCol().find({ role: 'admin' }, { projection: { _id: 1 } }).toArray();
-  await Promise.all(admins.map((a) =>
+
+  // Recipients: super_admin (always) + legacy admin (always) +
+  // country_admin filtered by country if provided.
+  const orFilters = [
+    { role: 'super_admin' },
+    { role: 'admin' },
+    country
+      ? { role: 'country_admin', country }
+      : { role: 'country_admin' },
+  ];
+  const recipients = await usersCol()
+    .find({ $or: orFilters }, { projection: { _id: 1 } })
+    .toArray();
+
+  await Promise.all(recipients.map((a) =>
     enqueueNotification({ userId: String(a._id), type, title, body, data }).catch(() => {}),
   ));
 }
 
 /**
- * Pick the PM with the fewest active assignments (round-robin by load).
- * Active = jobs with status assigned_to_pm | in_progress | paused.
+ * Pick the PM with the fewest active assignments (round-robin by load),
+ * scoped to a country if provided. Active = jobs with status
+ * assigned_to_pm | in_progress | paused.
+ *
+ * @param {string|null} country  ISO 2-letter country code; when provided,
+ *   only PMs whose `country` field matches are considered. If no PM in
+ *   that country, returns null (caller falls back to admin-notify).
+ *   Pass null/undefined for the legacy country-agnostic selection.
  */
-async function pickAvailablePm() {
+async function pickAvailablePm(country) {
+  const filter = { role: 'pm', 'meta.status': { $ne: 'inactive' } };
+  if (country) filter.country = country;
   const pms = await usersCol().find(
-    { role: 'pm', 'meta.status': { $ne: 'inactive' } },
-    { projection: { name: 1, mobile: 1, _id: 1 } },
+    filter,
+    { projection: { name: 1, mobile: 1, _id: 1, country: 1 } },
   ).toArray();
   if (!pms.length) return null;
 
@@ -58,14 +93,17 @@ export async function autoAssignPm(jobIdLike) {
   if (!job) return null;
   if (job.pmId) return { jobId: String(job._id), pmId: String(job.pmId), already: true };
 
-  const pm = await pickAvailablePm();
+  // Country-aware PM picker — restrict candidates to the booking's country.
+  // If no PM in that country, log + notify admins so they can assign manually
+  // or onboard a PM for the market.
+  const pm = await pickAvailablePm(job.country);
   if (!pm) {
-    logger.warn({ jobId: String(jobId) }, 'auto-assign: no PM available');
+    logger.warn({ jobId: String(jobId), country: job.country }, 'auto-assign: no PM available in country');
     await notifyAdmins({
       type: 'pm_unavailable',
       title: 'New paid booking — needs PM',
-      body: `Booking ${String(jobId).slice(-8)} is paid but no PM is available. Please assign manually.`,
-      data: { bookingId: String(jobId) },
+      body: `Booking ${String(jobId).slice(-8)} (${job.country || '—'}) is paid but no PM is available in that country. Please assign manually.`,
+      data: { bookingId: String(jobId), country: job.country },
     });
     return null;
   }
@@ -112,12 +150,14 @@ export async function autoAssignPm(jobIdLike) {
     data: { bookingId: String(jobId) },
   }).catch(() => {});
 
-  // Admin fan-out
+  // Admin fan-out — country-scoped: only the booking's country_admin
+  // (plus all super_admins) gets the notification.
   await notifyAdmins({
     type: 'booking_paid',
     title: 'Booking paid & PM assigned',
     body: `Booking ${String(jobId).slice(-8)} paid. Auto-assigned to ${pm.name || 'PM'}.`,
-    data: { bookingId: String(jobId), pmId: String(pm._id) },
+    data: { bookingId: String(jobId), pmId: String(pm._id), country: job.country },
+    country: job.country,
   });
 
   // Customer notification

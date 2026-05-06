@@ -5,6 +5,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
+import { applyScope } from '../../utils/scope.js';
 import { getDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { enqueueNotification } from '../notification/notification.service.js';
@@ -111,8 +112,10 @@ r.get('/dashboard', asyncHandler(async (req, res) => {
 
 r.get('/assignments', asyncHandler(async (req, res) => {
   const p = paginate(req.query);
-  const filter = { resourceId: new ObjectId(req.user.id) };
-  if (req.query.status) filter.status = String(req.query.status);
+  // Scope adds { country, resourceId } automatically. Keep explicit resourceId
+  // for legacy 'admin' callers (rare; this endpoint is gated to 'resource').
+  const baseFilter = { resourceId: new ObjectId(req.user.id) };
+  if (req.query.status) baseFilter.status = String(req.query.status);
 
   // Free-text search across customer name / mobile / email and full or
   // partial 24-char booking _id, mirroring /pm/bookings. Lets a resource
@@ -131,8 +134,9 @@ r.get('/assignments', asyncHandler(async (req, res) => {
     } else if (/^[0-9a-f]{4,23}$/i.test(q)) {
       orParts.push({ $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: re } } });
     }
-    filter.$or = orParts;
+    baseFilter.$or = orParts;
   }
+  const filter = applyScope(baseFilter, req);
 
   const [items, total] = await Promise.all([
     jobsCol().find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),

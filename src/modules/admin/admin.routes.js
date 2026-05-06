@@ -11,6 +11,7 @@ import { clearCachePattern, deleteCacheValue, getOrSet } from '../../utils/cache
 import { CACHE_KEYS } from '../../utils/cache.keys.js';
 import { ObjectId } from 'mongodb';
 import { paginate, buildMeta } from '../../utils/pagination.js';
+import { applyScope, isOutOfScope } from '../../utils/scope.js';
 import { searchBookings as meiliSearchBookings, searchResources as meiliSearchResources, isMeiliReady } from '../../config/meilisearch.js';
 import * as bookingService from '../booking/booking.service.js';
 import { AppError } from '../../utils/AppError.js';
@@ -120,8 +121,11 @@ r.get('/bookings', asyncHandler(async (req, res) => {
   const { status, page = 1, limit = 10, pageSize } = req.query;
   const lim = Number(pageSize || limit) || 10;
   const pg = Number(page) || 1;
-  const filter = {};
-  if (status) filter.status = String(status);
+  const baseFilter = {};
+  if (status) baseFilter.status = String(status);
+  // Country/role scope merged via applyScope — super_admin sees all, country_admin
+  // sees only their country, etc. See utils/scope.js + country-scope.middleware.js.
+  const filter = applyScope(baseFilter, req);
   const [rawJobs, total] = await Promise.all([
     jobsCol().find(filter).sort({ createdAt: -1 }).skip((pg - 1) * lim).limit(lim).toArray(),
     jobsCol().countDocuments(filter),
@@ -134,6 +138,8 @@ r.get('/bookings/:id', asyncHandler(async (req, res) => {
   let job = null;
   try { job = await jobsCol().findOne({ _id: new ObjectId(req.params.id) }); } catch {}
   if (!job) throw new AppError('RESOURCE_NOT_FOUND', 'Booking not found', 404);
+  // 404 (not 403) on cross-country access — don't leak that the booking exists.
+  if (isOutOfScope(job, req)) throw new AppError('RESOURCE_NOT_FOUND', 'Booking not found', 404);
   const [hydrated] = await hydrateJobs([job]);
   res.json({ success: true, data: hydrated });
 }));
@@ -322,21 +328,21 @@ r.get('/payments', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (req, res) 
   const lim = Math.min(Number(pageSize || limit) || 20, 100);
   const pg  = Number(page) || 1;
 
-  const filter = {};
-  if (status)   filter.status   = String(status);
-  if (country)  filter.country  = String(country).toUpperCase();
-  if (currency) filter.currency = String(currency).toUpperCase();
-  if (gateway)  filter.provider = String(gateway).toLowerCase();
-  if (userId) { try { filter.userId = new ObjectId(String(userId)); } catch {} }
-  if (jobId)  { try { filter.jobId  = new ObjectId(String(jobId));  } catch {} }
+  const baseFilter = {};
+  if (status)   baseFilter.status   = String(status);
+  if (country)  baseFilter.country  = String(country).toUpperCase();
+  if (currency) baseFilter.currency = String(currency).toUpperCase();
+  if (gateway)  baseFilter.provider = String(gateway).toLowerCase();
+  if (userId) { try { baseFilter.userId = new ObjectId(String(userId)); } catch {} }
+  if (jobId)  { try { baseFilter.jobId  = new ObjectId(String(jobId));  } catch {} }
   if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(String(from));
-    if (to)   filter.createdAt.$lte = new Date(String(to));
+    baseFilter.createdAt = {};
+    if (from) baseFilter.createdAt.$gte = new Date(String(from));
+    if (to)   baseFilter.createdAt.$lte = new Date(String(to));
   }
   if (q) {
     const needle = String(q).trim();
-    filter.$or = [
+    baseFilter.$or = [
       { paymentId: needle },
       { orderId:   needle },
       // partial match for payment IDs (Razorpay/Stripe IDs are short enough)
@@ -344,6 +350,10 @@ r.get('/payments', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (req, res) 
       { orderId:   { $regex: needle, $options: 'i' } },
     ];
   }
+  // Country/role scope merged in. Note: super_admin's explicit ?country=
+  // filter wins over scope (scope is {} for global). country_admin can't
+  // widen via ?country=AE — applyScope's scope filter has the floor.
+  const filter = applyScope(baseFilter, req);
 
   const [raw, total] = await Promise.all([
     paymentsCol().find(filter).sort({ createdAt: -1 }).skip((pg - 1) * lim).limit(lim).toArray(),
@@ -511,11 +521,14 @@ r.patch('/users/:id/status', permGuard(PERMS.USER_WRITE), validate(z.object({
 
 r.get('/users', asyncHandler(async (req, res) => {
   const p = paginate(req.query);
-  const filter = {};
+  const baseFilter = {};
   if (req.query.role) {
     // FE uses role=customer; backend stores role='user'
-    filter.role = req.query.role === 'customer' ? 'user' : req.query.role;
+    baseFilter.role = req.query.role === 'customer' ? 'user' : req.query.role;
   }
+  // Scope-aware: country_admin sees only users in their country (PMs/Resources
+  // and any customer with country set). Super admin sees all.
+  const filter = applyScope(baseFilter, req);
   const [items, total] = await Promise.all([
     usersCol().find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),
     usersCol().countDocuments(filter),
@@ -782,7 +795,7 @@ const staffSchema = z.object({
 const makeStaffRoutes = (role, basePath) => {
   r.get(basePath, asyncHandler(async (req, res) => {
     const p = paginate(req.query);
-    const filter = { role, deletedAt: { $exists: false } };
+    const baseFilter = { role, deletedAt: { $exists: false } };
 
     // Free-text search across name / mobile / email for the PM and
     // Resource directories. With staffing fleets in the thousands the
@@ -791,8 +804,10 @@ const makeStaffRoutes = (role, basePath) => {
     if (q) {
       const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp(safe, 'i');
-      filter.$or = [{ name: re }, { mobile: re }, { email: re }];
+      baseFilter.$or = [{ name: re }, { mobile: re }, { email: re }];
     }
+    // Country scope: country_admin sees only their country's PMs/Resources.
+    const filter = applyScope(baseFilter, req);
 
     const [items, total] = await Promise.all([
       usersCol().find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),
@@ -804,6 +819,8 @@ const makeStaffRoutes = (role, basePath) => {
   r.get(`${basePath}/:id`, asyncHandler(async (req, res) => {
     const u = await usersCol().findOne({ _id: toObjectId(req.params.id), role });
     if (!u) throw new AppError('RESOURCE_NOT_FOUND', `${role} not found`, 404);
+    // Cross-country: 404 (not 403) — don't leak that the user exists.
+    if (isOutOfScope(u, req)) throw new AppError('RESOURCE_NOT_FOUND', `${role} not found`, 404);
     res.json({ success: true, data: u });
   }));
 
@@ -811,6 +828,15 @@ const makeStaffRoutes = (role, basePath) => {
     const exists = await usersCol().findOne({ mobile: req.body.mobile });
     if (exists) throw new AppError('RESOURCE_CONFLICT', 'User with this mobile already exists', 409);
     const now = new Date();
+    // Inherit country from the creating admin's scope: a country_admin (IN)
+    // creating a new PM auto-tags the PM as country=IN. Super admin can
+    // override by sending body.country, or via ?asCountry=. country_admin's
+    // override is silently ignored to prevent cross-country pool leaks.
+    const scopeCountry = req.scope?.filter?.country;
+    const requestedCountry = req.body.country
+      ? String(req.body.country).toUpperCase()
+      : null;
+    const country = scopeCountry || requestedCountry || null;
     const doc = {
       role,
       name: req.body.name,
@@ -818,6 +844,7 @@ const makeStaffRoutes = (role, basePath) => {
       email: req.body.email || '',
       specialization: req.body.specialization || [],
       skills: req.body.skills || [],
+      country,
       meta: { isProfileComplete: true, status: 'active' },
       createdAt: now,
       updatedAt: now,
@@ -911,8 +938,11 @@ r.get('/dashboard/revenue', asyncHandler(async (_req, res) => {
 }));
 
 r.get('/dashboard/recent-activity', asyncHandler(async (_req, res) => {
-  const data = await getOrSet('admin:dashboard:recent', async () => {
-    const items = await jobsCol().find({}).sort({ createdAt: -1 }).limit(10).toArray();
+  // Cache key includes scope.mode so country admins don't see super_admin's
+  // cached recent activity. (cache:30s).
+  const cacheKey = `admin:dashboard:recent:${req.scope?.mode || 'off'}:${req.scope?.filter?.country || 'all'}`;
+  const data = await getOrSet(cacheKey, async () => {
+    const items = await jobsCol().find(applyScope({}, req)).sort({ createdAt: -1 }).limit(10).toArray();
     return await hydrateJobs(items);
   }, 30);
   res.json({ success: true, data });
@@ -923,7 +953,7 @@ r.get('/dashboard/recent-activity', asyncHandler(async (_req, res) => {
  * ───────────────────────────────────────────────────────────── */
 r.get('/jobs', asyncHandler(async (req, res) => {
   const p = paginate(req.query);
-  const items = await jobsCol().find({}).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray();
+  const items = await jobsCol().find(applyScope({}, req)).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray();
   const hydrated = await hydrateJobs(items);
   res.json({ success: true, data: hydrated });
 }));

@@ -29,10 +29,13 @@
 
 export function applyScope(baseFilter = {}, req) {
   const scopeFilter = req?.scope?.filter || {};
-  // Scope first so baseFilter can override; but role-restricted keys never
-  // appear in baseFilter because callers don't construct them — only the
-  // middleware does.
-  return { ...scopeFilter, ...baseFilter };
+  // Scope is the SECURITY FLOOR: scope keys ALWAYS win over baseFilter so a
+  // country_admin can't widen by sending `?country=AE` and have it land
+  // through to the query. Other baseFilter keys (status, createdAt, etc.)
+  // merge in fine since they're not in the scope filter.
+  //
+  // Order: spread baseFilter first, then scope — scope keys overwrite.
+  return { ...baseFilter, ...scopeFilter };
 }
 
 /**

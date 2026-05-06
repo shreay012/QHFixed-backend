@@ -5,6 +5,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
+import { applyScope, isOutOfScope } from '../../utils/scope.js';
 import { getDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { enqueueNotification } from '../notification/notification.service.js';
@@ -90,8 +91,11 @@ r.get('/dashboard', asyncHandler(async (req, res) => {
 
 r.get('/bookings', asyncHandler(async (req, res) => {
   const p = paginate(req.query);
-  const filter = { pmId: new ObjectId(req.user.id) };
-  if (req.query.status) filter.status = String(req.query.status);
+  // Scope brings in { country, pmId } for pm role automatically. We keep the
+  // explicit pmId fallback for the legacy 'admin' role calling this same
+  // endpoint (rare path; backward compat).
+  const baseFilter = { pmId: new ObjectId(req.user.id) };
+  if (req.query.status) baseFilter.status = String(req.query.status);
 
   // Free-text search across the bookingId tail, raw mongo _id, customer
   // name, customer mobile, and customer email so a PM can find a single
@@ -112,8 +116,9 @@ r.get('/bookings', asyncHandler(async (req, res) => {
       // Partial id — match anywhere in the hex string of _id
       orParts.push({ $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: re } } });
     }
-    filter.$or = orParts;
+    baseFilter.$or = orParts;
   }
+  const filter = applyScope(baseFilter, req);
 
   const [items, total] = await Promise.all([
     jobsCol().find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),
