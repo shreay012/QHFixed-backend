@@ -127,26 +127,30 @@ r.post('/create-order', rateLimitPayment(), roleGuard(['user']), validate(create
   // by `receipt` (job_<jobId>) and returns the same order.id for retries,
   // so without upsert a second click would hit the unique-orderId index
   // (E11000). Upsert lets the same orderId be safely re-used.
+  //
+  // paymentId is omitted (not null) when missing, because the unique
+  // sparse index on { paymentId: 1 } treats explicit null as a value —
+  // multiple null docs would still 11000. Missing field is what sparse
+  // actually skips.
+  const insertDoc = {
+    userId: new ObjectId(req.user.id),
+    jobId: new ObjectId(jobId),
+    bookingId: job.bookingId,
+    provider: order.gatewayName,
+    orderId: order.orderId,
+    amount: invoice.total,
+    currency,
+    country,
+    invoice,
+    status: 'created',
+    mock: order.mock || false,
+    createdAt: new Date(),
+  };
+  if (order.paymentId) insertDoc.paymentId = order.paymentId;
+
   await col().updateOne(
     { orderId: order.orderId },
-    {
-      $setOnInsert: {
-        userId: new ObjectId(req.user.id),
-        jobId: new ObjectId(jobId),
-        bookingId: job.bookingId,
-        provider: order.gatewayName,
-        orderId: order.orderId,
-        paymentId: order.paymentId,
-        amount: invoice.total,
-        currency,
-        country,
-        invoice,
-        status: 'created',
-        mock: order.mock || false,
-        createdAt: new Date(),
-      },
-      $set: { updatedAt: new Date() },
-    },
+    { $setOnInsert: insertDoc, $set: { updatedAt: new Date() } },
     { upsert: true },
   );
 
