@@ -333,7 +333,6 @@ r.post('/admin/services/bulk-import', roleGuard(['admin']), csvUpload.single('fi
         active:      row.active !== undefined ? String(row.active).toLowerCase() !== 'false' : true,
         updatedAt:   new Date(),
       };
-      // Remove undefined keys
       Object.keys(doc).forEach(k => doc[k] === undefined && delete doc[k]);
 
       const existing = await col().findOne({ slug });

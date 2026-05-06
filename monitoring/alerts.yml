@@ -1,0 +1,178 @@
+groups:
+  - name: quickhire.api
+    interval: 30s
+    rules:
+      # ── Availability ──────────────────────────────────────────
+      - alert: APIHighErrorRate
+        expr: |
+          sum(rate(qh_http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(qh_http_requests_total[5m])) > 0.02
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "API error rate > 2% for 2 minutes"
+          description: "Current error rate: {{ $value | humanizePercentage }}. Check Sentry for root cause."
+          runbook: "https://docs.quickhire.in/runbooks/high-error-rate"
+
+      - alert: APIHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(qh_http_request_duration_seconds_bucket[5m])) by (le))
+          > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "p95 latency > 2s for 5 minutes"
+          description: "p95: {{ $value | humanizeDuration }}. May indicate DB slowness or CPU pressure."
+          runbook: "https://docs.quickhire.in/runbooks/high-latency"
+
+      - alert: APISpikeLatency
+        expr: |
+          histogram_quantile(0.99, sum(rate(qh_http_request_duration_seconds_bucket[5m])) by (le))
+          > 10
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "p99 latency > 10s — potential outage"
+          description: "p99: {{ $value | humanizeDuration }}."
+
+      # ── Business KPIs ─────────────────────────────────────────
+      - alert: BookingCancellationSpike
+        expr: |
+          sum(rate(qh_bookings_cancelled_total[10m])) * 600
+          > 15
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "More than 15 bookings cancelled in 10 minutes"
+          description: "Rate: {{ $value | humanize }} cancellations/10m. Review ops dashboard for cluster issues."
+
+      - alert: PaymentFailureSpike
+        expr: |
+          sum(rate(qh_payments_total{status="failed"}[5m])) * 300
+          > 10
+        for: 5m
+        labels:
+          severity: critical
+          team: finance
+        annotations:
+          summary: "More than 10 payment failures in 5 minutes"
+          description: "Payment failures: {{ $value | humanize }}/5m. Check gateway status pages."
+          runbook: "https://docs.quickhire.in/runbooks/payment-failures"
+
+      - alert: ZeroNewBookings
+        expr: |
+          sum(increase(qh_bookings_created_total[15m])) == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "No new bookings in 15 minutes during business hours"
+          description: "This may indicate a frontend issue or booking flow regression."
+
+      # ── Infrastructure ────────────────────────────────────────
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "Redis is down"
+          description: "Redis unavailable. Rate limiting, sessions, and real-time tracking will degrade."
+          runbook: "https://docs.quickhire.in/runbooks/redis-down"
+
+      - alert: MongoReplicationLag
+        expr: mongodb_mongod_replset_member_replication_lag_seconds > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "MongoDB replication lag > 30s"
+          description: "Lag: {{ $value | humanizeDuration }}. Secondary reads may be stale."
+
+      - alert: QueueBacklog
+        expr: bullmq_queue_waiting_count > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "BullMQ queue backlog > 500 jobs"
+          description: "Queue: {{ $labels.queue }}, waiting: {{ $value }}. Scale workers or investigate slow jobs."
+
+      - alert: QueueFailedJobs
+        expr: |
+          sum(increase(qh_queue_jobs_total{status="failed"}[10m])) by (queue)
+          > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "More than 20 failed queue jobs in 10 minutes"
+          description: "Queue: {{ $labels.queue }}, failures: {{ $value }}. Check Bull Board for stack traces."
+
+      - alert: SocketConnectionsDrop
+        expr: |
+          qh_connected_sockets < 100
+          and
+          qh_connected_sockets offset 5m > 500
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Socket.IO connections dropped > 80% in 5 minutes"
+          description: "Connected: {{ $value }}. Possible server restart or network partition."
+
+      # ── Security ──────────────────────────────────────────────
+      - alert: RateLimitSpike
+        expr: |
+          sum(rate(qh_http_requests_total{status_code="429"}[5m])) * 300
+          > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "More than 100 rate-limited requests in 5 minutes"
+          description: "Could indicate a scraper, DDoS attempt, or misconfigured client."
+
+  - name: quickhire.slo
+    interval: 60s
+    rules:
+      - record: slo:api_availability:ratio_5m
+        expr: |
+          1 - (
+            sum(rate(qh_http_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(qh_http_requests_total[5m]))
+          )
+
+      - record: slo:api_latency_p95:seconds_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(qh_http_request_duration_seconds_bucket[5m])) by (le)
+          )
+
+      - alert: SLOAvailabilityBreach
+        expr: slo:api_availability:ratio_5m < 0.995
+        for: 10m
+        labels:
+          severity: critical
+          team: backend
+          slo: availability
+        annotations:
+          summary: "API availability SLO breach (< 99.5%)"
+          description: "Current: {{ $value | humanizePercentage }}. Error budget is burning fast."

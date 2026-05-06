@@ -4,7 +4,6 @@ import { handleLifecycleTick, scheduleLifecycleTick } from './lifecycle.handler.
 import { handleAnalyticsJob } from './analytics.handler.js';
 import { handleEmailJob } from './email.handler.js';
 import { logger } from '../config/logger.js';
-import { env } from '../config/env.js';
 
 /**
  * Queue Setup & Integration
@@ -18,10 +17,6 @@ import { env } from '../config/env.js';
  * Call this once at app startup (in server.js)
  */
 export async function startQueueWorkers() {
-  if (env.DISABLE_QUEUE_WORKERS === 'true') {
-    logger.info('queue workers disabled (DISABLE_QUEUE_WORKERS=true) — skipping');
-    return;
-  }
   try {
     logger.info('starting queue workers');
 
@@ -63,7 +58,6 @@ export async function startQueueWorkers() {
  * Call this on graceful shutdown
  */
 export async function stopQueueWorkers() {
-  if (env.DISABLE_QUEUE_WORKERS === 'true') return;
   try {
     logger.info('stopping queue workers');
     const { closeAllQueues } = await import('./index.js');

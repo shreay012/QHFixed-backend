@@ -629,9 +629,6 @@ const serviceSchema = z.object({
   workingHours: I18nStringSchema.optional().default(''),
   transparentTitle:    I18nStringSchema.optional().default(''),
   transparentSubtitle: I18nStringSchema.optional().default(''),
-  slug:         z.string().min(2).max(100).optional(),
-  iconUrl:      z.string().optional().default(''),
-  sortOrder:    z.number().int().min(0).max(9999).optional().default(999),
   active:       z.boolean().optional(),
   availability: z.record(z.unknown()).optional(),
 });
@@ -672,7 +669,7 @@ r.get('/services', asyncHandler(async (req, res) => {
   }
 
   const [items, total] = await Promise.all([
-    servicesCol().find(filter).sort({ sortOrder: 1, createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),
+    servicesCol().find(filter).sort({ createdAt: -1 }).skip(p.skip).limit(p.limit).toArray(),
     servicesCol().countDocuments(filter),
   ]);
   res.json({ success: true, data: items, meta: buildMeta({ page: p.page, pageSize: p.pageSize, total }) });
@@ -691,7 +688,7 @@ r.get('/services/:id', asyncHandler(async (req, res) => {
 r.post('/services', permGuard(PERMS.SERVICE_WRITE), validate(serviceSchema), asyncHandler(async (req, res) => {
   const body = req.body;
   const nameEn = toEnglish(body.name);
-  const slug = (body.slug && body.slug.trim()) || slugify(nameEn) + '-' + Math.random().toString(36).slice(2, 7);
+  const slug = slugify(nameEn) + '-' + Math.random().toString(36).slice(2, 7);
   const doc = {
     slug,
     name:         body.name,          // i18n object or plain string
@@ -705,8 +702,6 @@ r.post('/services', permGuard(PERMS.SERVICE_WRITE), validate(serviceSchema), asy
     pricing:      { hourly: Number(body.hourlyRate) || 0, currency: 'INR' },
     imageUrl:     body.imageUrl || '',
     image:        body.imageUrl || '',
-    iconUrl:      body.iconUrl || '',
-    sortOrder:    Number(body.sortOrder) || 999,
     faqs:         body.faqs || [],
     // CMS sections — persist exactly what admin sent so customer-facing
     // flattenI18nDeep can pick the right locale at read time.
@@ -743,10 +738,7 @@ r.put('/services/:id', permGuard(PERMS.SERVICE_WRITE), validate(serviceSchema.pa
     $set.hourlyRate = Number(body.hourlyRate) || 0;
     $set.pricing    = { hourly: Number(body.hourlyRate) || 0, currency: 'INR' };
   }
-  if (body.slug     !== undefined && body.slug.trim()) $set.slug = body.slug.trim();
   if (body.imageUrl !== undefined) { $set.imageUrl = body.imageUrl; $set.image = body.imageUrl; }
-  if (body.iconUrl  !== undefined) $set.iconUrl  = body.iconUrl;
-  if (body.sortOrder !== undefined) $set.sortOrder = Number(body.sortOrder) || 999;
   if (body.faqs     !== undefined) $set.faqs     = body.faqs;
   // CMS sections (per-service overrides for the static service-details page)
   if (body.features            !== undefined) $set.features            = body.features;

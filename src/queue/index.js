@@ -16,20 +16,15 @@ import { logger } from '../config/logger.js';
  * - analytics: async analytics/reporting tasks
  */
 
-// Lazy-initialized so no connection is opened until workers are actually
-// started. If DISABLE_QUEUE_WORKERS=true this is never created at all,
-// meaning no ECONNREFUSED errors on deploys without a queue Redis.
-let bullConnection = null;
-
-function getBullConnection() {
-  if (!bullConnection) {
-    bullConnection = new Redis(env.REDIS_URL_QUEUE || env.REDIS_URL, {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-  }
-  return bullConnection;
-}
+// Create dedicated Redis connection for BullMQ (requires
+// maxRetriesPerRequest: null). Uses REDIS_URL_QUEUE if set so the queue
+// can run on its own Redis instance — important at scale, since one
+// slow KEYS / blocked Lua script on the cache instance shouldn't pause
+// notification dispatch. Falls back to the shared REDIS_URL otherwise.
+const bullConnection = new Redis(env.REDIS_URL_QUEUE || env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
 
 /**
  * Per-queue concurrency defaults. Notifications are the highest-volume
@@ -67,7 +62,7 @@ export function createQueue(name) {
   if (queues[name]) return queues[name];
 
   const queue = new Queue(name, {
-    connection: getBullConnection(),
+    connection: bullConnection,
     defaultJobOptions: {
       attempts: 3, // Retry 3 times
       backoff: {
@@ -120,7 +115,7 @@ export function registerWorker(name, handler, options = {}) {
     || 5;
 
   const worker = new Worker(name, handler, {
-    connection: getBullConnection(),
+    connection: bullConnection,
     concurrency,
     lockDuration: options.lockDuration || 30000, // 30s lock per job
     lockRenewTime: options.lockRenewTime || 15000, // Renew lock every 15s
@@ -159,7 +154,6 @@ export function registerWorker(name, handler, options = {}) {
  * @param {Object} options - Job options (delay, priority, etc)
  */
 export async function enqueueJob(queueName, data, options = {}) {
-  if (env.DISABLE_QUEUE_WORKERS === 'true') return null;
   try {
     const queue = getQueue(queueName);
     // Build job options - only valid BullMQ options
@@ -264,15 +258,13 @@ export async function closeAllQueues() {
     }
   }
 
-  // Close BullMQ Redis connection (only if it was ever opened)
-  if (bullConnection) {
-    try {
-      await bullConnection.quit();
-      logger.info('bullmq redis connection closed');
-    } catch (err) {
-      logger.error({ err }, 'failed to close bullmq redis');
-      errors.push(err);
-    }
+  // Close BullMQ Redis connection
+  try {
+    await bullConnection.quit();
+    logger.info('bullmq redis connection closed');
+  } catch (err) {
+    logger.error({ err }, 'failed to close bullmq redis');
+    errors.push(err);
   }
 
   if (errors.length > 0) {

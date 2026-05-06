@@ -19,9 +19,6 @@ const schema = z.object({
   // existing single-Redis deploys keep working untouched.
   REDIS_URL_QUEUE:  z.string().optional(),
   REDIS_URL_PUBSUB: z.string().optional(),
-  // Set to 'true' to skip BullMQ worker startup entirely (Render free tier
-  // with no dedicated queue Redis). Jobs are silently dropped; app stays up.
-  DISABLE_QUEUE_WORKERS: z.string().optional(),
 
   // Per-queue worker concurrency overrides. Defaults are tuned for ~1M
   // users / ~50K live bookings (see queue/index.js). Lower these for
@@ -72,7 +69,6 @@ const schema = z.object({
   SENTRY_DSN: z.string().optional(),
   APP_VERSION: z.string().default('0.0.0'),
   ANTHROPIC_API_KEY: z.string().optional(),
-  BLOG_API_KEY: z.string().optional(),
   MEILISEARCH_URL: z.string().default('http://localhost:7700'),
   MEILISEARCH_KEY: z.string().optional(),
 

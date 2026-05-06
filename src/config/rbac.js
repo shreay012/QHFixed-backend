@@ -22,7 +22,6 @@ export const ROLES = {
   SUPPORT: 'support',
   GROWTH: 'growth',
   VIEWER: 'viewer',
-  SEO: 'seo',
   PM: 'pm',
   RESOURCE: 'resource',
   CUSTOMER: 'customer',
@@ -37,13 +36,7 @@ export const ADMIN_ROLES = [
   ROLES.SUPPORT,
   ROLES.GROWTH,
   ROLES.VIEWER,
-  ROLES.SEO,
 ];
-
-export const PERMS_SEO = {
-  SEO_READ:  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.SEO, ROLES.GROWTH, ROLES.VIEWER],
-  SEO_WRITE: [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.SEO],
-};
 
 /**
  * Permission groups — arrays of roles that can perform a given action class.

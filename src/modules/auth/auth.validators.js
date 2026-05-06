@@ -4,7 +4,7 @@ import { z } from 'zod';
 // Accept both, normalize to "user" before downstream code.
 const role = z.preprocess(
   (v) => (v === 'customer' ? 'user' : v),
-  z.enum(['user', 'pm', 'admin', 'resource', 'super_admin', 'ops', 'finance', 'support', 'growth', 'viewer', 'seo']).default('user'),
+  z.enum(['user', 'pm', 'admin', 'resource', 'super_admin', 'ops', 'finance', 'support', 'growth', 'viewer']).default('user'),
 );
 
 // E.164 phone format: optional `+`, country code (1-3 digits), then 4-14

@@ -82,9 +82,6 @@ const PUBLIC_PREFIXES = [
     '/reviews/booking',
     '/legal/doc',         // legal documents are publicly readable (shown pre-login)
     '/geo-pricing/price', // per-service pricing (shown on service detail pages)
-    '/blog/posts',        // public blog list + single post (admin routes have their own adminGuard)
-    '/blog/categories',   // public category list
-    '/admin/seo/public',  // SEO metadata for Next.js generateMetadata (no auth)
   ];
 
 export async function authMiddleware(req, _res, next) {
