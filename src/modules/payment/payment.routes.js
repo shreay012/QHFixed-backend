@@ -123,23 +123,32 @@ r.post('/create-order', rateLimitPayment(), roleGuard(['user']), validate(create
     };
   }
 
-  // Persist payment record
-  await col().insertOne({
-    userId: new ObjectId(req.user.id),
-    jobId: new ObjectId(jobId),
-    bookingId: job.bookingId,
-    provider: order.gatewayName,
-    orderId: order.orderId,
-    paymentId: order.paymentId,
-    amount: invoice.total,
-    currency,
-    country,
-    invoice,
-    status: 'created',
-    mock: order.mock || false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
+  // Persist payment record. Idempotent on orderId — Razorpay deduplicates
+  // by `receipt` (job_<jobId>) and returns the same order.id for retries,
+  // so without upsert a second click would hit the unique-orderId index
+  // (E11000). Upsert lets the same orderId be safely re-used.
+  await col().updateOne(
+    { orderId: order.orderId },
+    {
+      $setOnInsert: {
+        userId: new ObjectId(req.user.id),
+        jobId: new ObjectId(jobId),
+        bookingId: job.bookingId,
+        provider: order.gatewayName,
+        orderId: order.orderId,
+        paymentId: order.paymentId,
+        amount: invoice.total,
+        currency,
+        country,
+        invoice,
+        status: 'created',
+        mock: order.mock || false,
+        createdAt: new Date(),
+      },
+      $set: { updatedAt: new Date() },
+    },
+    { upsert: true },
+  );
 
   // Auto-complete mock payments immediately (dev only)
   if (order.mock) {
