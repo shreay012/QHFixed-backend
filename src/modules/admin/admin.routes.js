@@ -878,6 +878,43 @@ makeStaffRoutes('pm', '/pms');
 makeStaffRoutes('resource', '/resources');
 
 /* ─────────────────────────────────────────────────────────────
+ * Country Admin lifecycle (super_admin only)
+ *
+ * Reuses the same shape as /pms and /resources but with stricter
+ * permissions: only super_admin can create / activate / deactivate
+ * country admins. Listing is already covered by /admin/users?role=country_admin
+ * (gated by USER_READ which includes super_admin).
+ * ───────────────────────────────────────────────────────────── */
+const countryAdminSchema = z.object({
+  name: z.string().min(2).max(100),
+  mobile: z.string().regex(/^\+?\d{10,15}$/, 'mobile must be 10–15 digits, optional + prefix'),
+  email: z.string().email().optional().or(z.literal('')).default(''),
+  country: z.enum(['IN', 'AE', 'DE', 'AU', 'US']),
+}).strict();
+
+r.post('/country-admins', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(countryAdminSchema), asyncHandler(async (req, res) => {
+  const { name, mobile, email, country } = req.body;
+  const existing = await usersCol().findOne({ mobile, role: 'country_admin' });
+  if (existing) throw new AppError('RESOURCE_CONFLICT', 'Country admin with this mobile already exists', 409);
+  const dup = await usersCol().findOne({ role: 'country_admin', country });
+  if (dup) throw new AppError('RESOURCE_CONFLICT', `A country admin already exists for ${country}`, 409);
+  const now = new Date();
+  const doc = {
+    role: 'country_admin',
+    country,
+    name,
+    mobile,
+    email: email || '',
+    managedCountries: [country],
+    meta: { isProfileComplete: true, status: 'active' },
+    createdAt: now,
+    updatedAt: now,
+  };
+  const ins = await usersCol().insertOne(doc);
+  res.status(201).json({ success: true, data: { _id: ins.insertedId, ...doc } });
+}));
+
+/* ─────────────────────────────────────────────────────────────
  * Admin: Dashboard sub-routes used by FE
  * ───────────────────────────────────────────────────────────── */
 // Dashboard endpoints run multiple aggregations + countDocuments and were
