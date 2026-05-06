@@ -173,7 +173,16 @@ export async function buildAvailability({ serviceId } = {}) {
 
 // Throws an AppError-like object if the requested slot is not bookable. Returns { ok, reason }.
 export async function checkSlotBookable({ serviceId, dateStr, startTime, bookingType }) {
-  const slot = FIXED_SLOTS.find((s) => s.startTime === startTime);
+  // Auto-snap any business-hours startTime to the matching FIXED_SLOT.
+  // Frontends in different versions sometimes send 10:00 / 09:30 / etc.
+  // Rather than 422'ing the whole booking, we map any 09:00–13:59 to the
+  // morning slot and any 14:00–17:59 to the afternoon slot.
+  let slot = FIXED_SLOTS.find((s) => s.startTime === startTime);
+  if (!slot && typeof startTime === 'string' && /^\d{2}:\d{2}$/.test(startTime)) {
+    const [h] = startTime.split(':').map(Number);
+    if (h >= 9 && h < 14) slot = FIXED_SLOTS[0];        // morning bucket
+    else if (h >= 14 && h < 18) slot = FIXED_SLOTS[1];  // afternoon bucket
+  }
   if (!slot) return { ok: false, reason: 'INVALID_SLOT' };
 
   const { slotCapacity, holidays } = await getSchedulingConfig();
