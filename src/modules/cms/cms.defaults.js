@@ -153,14 +153,31 @@ export const CMS_DEFAULTS = {
   ],
 
   // Site videos — admin-editable URLs for marketing/explainer videos.
-  // Frontend fetches via GET /api/cms/videos and falls back to bundled
-  // /videos/howWeHire.mp4 if API is unavailable.
+  // Each video supports a default `url` plus optional per-country `urls.{IN,AE,DE,AU,US}`.
+  // Frontend's useSiteVideo() hook reads the qh_country cookie and picks the
+  // matching country-specific URL, falling back to `url` then to the bundled
+  // /videos/<file>.mp4 if the API is unavailable.
   videos: [
     {
       id: 'how-we-hire',
       title: 'How QuickHire Works',
       description: 'A short walkthrough of the QuickHire booking flow.',
       url: '/videos/howWeHire.mp4',
+      urls: {
+        IN: '',  // empty = use default `url`
+        AE: '',
+        DE: '',
+        AU: '',
+        US: '',
+      },
+      poster: '',
+    },
+    {
+      id: 'intro',
+      title: 'QuickHire Intro',
+      description: 'Brand intro video shown on resource discovery pages.',
+      url: 'https://quickhire.services/backend/backend/videos/Quick-Hire-new-intro-video.mp4',
+      urls: { IN: '', AE: '', DE: '', AU: '', US: '' },
       poster: '',
     },
   ],
