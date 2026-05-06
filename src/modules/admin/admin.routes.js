@@ -915,6 +915,61 @@ r.post('/country-admins', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(country
 }));
 
 /* ─────────────────────────────────────────────────────────────
+ * Super Admin lifecycle (super_admin only — RBAC_WRITE perm)
+ *
+ * Used by /admin/super-admins frontend page. Lets the existing root
+ * super_admin onboard additional super_admins (e.g. CTO, head of ops)
+ * or demote a country_admin → admin if they leave the country role.
+ *
+ * Promote-existing flow: when `userId` is provided, upgrade that user's
+ * role; otherwise create a new user with role=super_admin.
+ * ───────────────────────────────────────────────────────────── */
+const superAdminSchema = z.object({
+  // When userId provided, we're promoting an existing user (any role).
+  userId: z.string().regex(/^[0-9a-f]{24}$/).optional(),
+  // Otherwise these create a new super_admin from scratch.
+  name: z.string().min(2).max(100).optional(),
+  mobile: z.string().regex(/^\+?\d{10,15}$/).optional(),
+  email: z.string().email().optional().or(z.literal('')).default(''),
+}).refine((v) => v.userId || (v.name && v.mobile), {
+  message: 'Either userId (to promote) or name+mobile (to create) is required',
+});
+
+r.post('/super-admins', permGuard(PERMS.RBAC_WRITE), validate(superAdminSchema), asyncHandler(async (req, res) => {
+  const { userId, name, mobile, email } = req.body;
+  const now = new Date();
+
+  // Promote existing user
+  if (userId) {
+    const target = await usersCol().findOne({ _id: toObjectId(userId, 'userId') });
+    if (!target) throw new AppError('RESOURCE_NOT_FOUND', 'User not found', 404);
+    await usersCol().updateOne(
+      { _id: target._id },
+      { $set: { role: 'super_admin', country: null, updatedAt: now },
+        $push: { history: { at: now, actorId: req.user.id, event: 'role_promoted', from: target.role, to: 'super_admin' } } },
+    );
+    const updated = await usersCol().findOne({ _id: target._id });
+    return res.status(200).json({ success: true, data: updated, action: 'promoted' });
+  }
+
+  // Create new super_admin
+  const conflict = await usersCol().findOne({ mobile });
+  if (conflict) throw new AppError('RESOURCE_CONFLICT', 'A user with this mobile already exists. Use userId to promote them.', 409);
+  const doc = {
+    role: 'super_admin',
+    country: null,
+    name,
+    mobile,
+    email: email || '',
+    meta: { isProfileComplete: true, status: 'active' },
+    createdAt: now,
+    updatedAt: now,
+  };
+  const ins = await usersCol().insertOne(doc);
+  res.status(201).json({ success: true, data: { _id: ins.insertedId, ...doc }, action: 'created' });
+}));
+
+/* ─────────────────────────────────────────────────────────────
  * Admin: Dashboard sub-routes used by FE
  * ───────────────────────────────────────────────────────────── */
 // Dashboard endpoints run multiple aggregations + countDocuments and were
