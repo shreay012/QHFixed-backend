@@ -5,6 +5,9 @@
   "type": "module",
   "description": "QuickHire backend - modular monolith (auth, booking, chat, payment, notification, admin)",
   "main": "src/server.js",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
