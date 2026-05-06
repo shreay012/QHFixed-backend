@@ -96,6 +96,16 @@ function pickI18n(obj, locale) {
 function flattenI18nDeep(node, locale, seen = new WeakSet()) {
   if (node == null) return node;
   if (typeof node !== 'object') return node;
+  // Preserve Date and ObjectId instances — they have no enumerable keys, so
+  // a naive `for ... Object.keys(node)` would convert them to empty `{}` and
+  // break downstream JSON consumers (e.g. Next.js sitemap calling
+  // `new Date(updatedAt).toISOString()` would throw "Invalid time value").
+  if (node instanceof Date) return node;
+  // mongodb ObjectId / BSON types — cheap heuristic via constructor name.
+  const ctor = node.constructor && node.constructor.name;
+  if (ctor === 'ObjectId' || ctor === 'Decimal128' || ctor === 'Binary' || ctor === 'BSONRegExp') {
+    return node;
+  }
   if (seen.has(node)) return node;
   seen.add(node);
   if (Array.isArray(node)) return node.map((v) => flattenI18nDeep(v, locale, seen));
