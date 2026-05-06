@@ -36,20 +36,26 @@ export function roomIdFor({ pmId, serviceId, userId }) {
 }
 
 // GROUP_CHAT_FIX_V1: booking-scoped rooms — all 4 roles converge on `booking_<id>`.
+// Multi-country RBAC: super_admin always joins; country_admin joins when the
+// booking is in their country; assigned PM/resource and the customer always
+// join their own bookings.
+const GLOBAL_STAFF_ROLES = new Set(['admin', 'super_admin']);
 export async function canJoinRoom(user, roomId) {
   if (!roomId) return false;
-  if (user.role === 'admin') return true;
+  if (GLOBAL_STAFF_ROLES.has(user.role)) return true;
 
   // NEW canonical group room: booking_<bookingId>
-  // Membership = customer (userId) OR assigned PM (pmId) OR assigned resource (resourceId).
+  // Membership = customer (userId) OR assigned PM (pmId) OR assigned resource (resourceId)
+  // OR country_admin whose country == booking.country.
   if (roomId.startsWith('booking_')) {
     const bookingId = roomId.slice('booking_'.length);
     if (!/^[0-9a-f]{24}$/i.test(bookingId)) return false;
     const booking = await getDb().collection('bookings').findOne(
       { _id: new ObjectId(bookingId) },
-      { projection: { userId: 1, pmId: 1, resourceId: 1 } },
+      { projection: { userId: 1, pmId: 1, resourceId: 1, country: 1 } },
     );
     if (!booking) return false;
+    if (user.role === 'country_admin' && user.country && booking.country === user.country) return true;
     const uid = String(user.id);
     return [booking.userId, booking.pmId, booking.resourceId]
       .filter(Boolean).map(String).includes(uid);

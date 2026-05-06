@@ -26,7 +26,7 @@ const ATTACH_MIMES = new Set([
 
 // GET /api/chat/messages/:customerId?serviceId=...&before=...&limit=50
 r.get('/messages/:customerId',
-  roleGuard(['user', 'pm', 'admin']),
+  roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']),
   asyncHandler(async (req, res) => {
     const { customerId } = req.params;
     const { serviceId, before, limit, bookingId } = req.query;
@@ -55,7 +55,7 @@ const sendSchema = z.object({
 });
 
 r.post('/send/:customerId',
-  roleGuard(['user', 'pm', 'admin']),
+  roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']),
   upload.single('attachment'),
   asyncHandler(async (req, res) => {
     const body = sendSchema.parse(req.body);
@@ -114,12 +114,12 @@ const seenHandler = asyncHandler(async (req, res) => {
   await chatService.markSeen(req.params.messageId, req.user.id);
   res.json({ success: true });
 });
-r.post('/seen/:messageId', roleGuard(['user', 'pm', 'admin']), seenHandler);
-r.get('/seen/:messageId', roleGuard(['user', 'pm', 'admin']), seenHandler);
+r.post('/seen/:messageId', roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']), seenHandler);
+r.get('/seen/:messageId', roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']), seenHandler);
 
 // POST /api/chat/typing/:customerId  — broadcast typing to room (no persistence)
 r.post('/typing/:customerId',
-  roleGuard(['user', 'pm', 'admin']),
+  roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']),
   asyncHandler(async (req, res) => {
     const { customerId } = req.params;
     const { isTyping, serviceId } = req.body || {};
@@ -142,7 +142,7 @@ const uploadUrlSchema = z.object({
   name: z.string().max(200),
 });
 r.post('/upload-url',
-  roleGuard(['user', 'pm', 'admin']),
+  roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']),
   validate(uploadUrlSchema),
   asyncHandler(async (req, res) => {
     if (!ATTACH_MIMES.has(req.body.mime)) {
@@ -162,7 +162,7 @@ r.post('/upload-url',
 
 // GET /api/chat/attachment-url?key=chat/...  → presigned GET URL for private S3 objects
 r.get('/attachment-url',
-  roleGuard(['user', 'pm', 'admin']),
+  roleGuard(['user', 'pm', 'admin', 'super_admin', 'country_admin', 'resource']),
   asyncHandler(async (req, res) => {
     const key = req.query.key;
     if (!key || !String(key).startsWith('chat/')) {
