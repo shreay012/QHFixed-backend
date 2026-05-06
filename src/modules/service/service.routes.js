@@ -73,49 +73,66 @@ function pickLocale(v, locale) {
   return v;
 }
 
+// Heuristic: detect an i18n-shaped object {en,hi,ar,de,…} where every
+// i18n-keyed value is a string. Mirrors the frontend's flattenI18nDeep.
+const I18N_KEYS = ['en', 'hi', 'ar', 'de', 'es', 'fr', 'ja', 'zh-CN'];
+function isI18nObject(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  let has = false;
+  for (const k of Object.keys(v)) {
+    if (I18N_KEYS.includes(k)) {
+      has = true;
+      if (v[k] != null && typeof v[k] !== 'string') return false;
+    }
+  }
+  return has;
+}
+function pickI18n(obj, locale) {
+  return obj[locale] || obj.en || obj[Object.keys(obj)[0]] || '';
+}
+// Recursively flatten every i18n object inside `node` to the locale string.
+// Skips known structural fields (pricing, activePricing) so number values
+// don't get mangled.
+function flattenI18nDeep(node, locale, seen = new WeakSet()) {
+  if (node == null) return node;
+  if (typeof node !== 'object') return node;
+  if (seen.has(node)) return node;
+  seen.add(node);
+  if (Array.isArray(node)) return node.map((v) => flattenI18nDeep(v, locale, seen));
+  if (isI18nObject(node)) return pickI18n(node, locale);
+  const out = {};
+  for (const k of Object.keys(node)) out[k] = flattenI18nDeep(node[k], locale, seen);
+  return out;
+}
+
 function projectForCountry(service, country, locale = 'en') {
   if (!service) return service;
-  const out = { ...service };
 
-  // Localise i18n name / description / tagline to a flat string for the
-  // requested locale. The original i18n object is preserved under the *I18n
-  // key so clients that need all translations (e.g. admin edit) can still
-  // access them.
+  // 1. Compute pricing/country-specific projection BEFORE locale flattening
+  // (so we don't try to flatten numeric pricing structures).
+  const intermediate = { ...service };
+  if (Array.isArray(intermediate.pricing)) {
+    const match = getPricingForCountry(intermediate, country);
+    intermediate.activePricing = match || null;
+    intermediate.supportedCountries = listSupportedCountries(intermediate);
+  }
+
+  // 2. Preserve full i18n objects under *I18n suffix for clients that need
+  // all translations (e.g. admin edit page) before flattening overwrites them.
   for (const f of ['name', 'description', 'tagline']) {
-    const v = out[f];
+    const v = intermediate[f];
     if (v && typeof v === 'object' && !Array.isArray(v)) {
-      out[`${f}I18n`] = v;
-      out[f] = pickLocale(v, locale);
+      intermediate[`${f}I18n`] = v;
     }
   }
 
-  // Localise technology names.  Each technology may be a plain string (legacy)
-  // or a rich object { name, en, hi, ... } created by the new admin form.
-  if (Array.isArray(out.technologies)) {
-    out.technologies = out.technologies.map((t) => {
-      if (!t || typeof t === 'string') return t;
-      // Rich object — flatten to the locale string
-      return pickLocale(t, locale) || t.name || t.en || '';
-    });
-  }
-
-  // Localise notIncluded items if they ever become i18n-shaped
-  if (Array.isArray(out.notIncluded)) {
-    out.notIncluded = out.notIncluded.map((item) => pickLocale(item, locale));
-  }
-
-  if (Array.isArray(out.pricing)) {
-    const match = getPricingForCountry(out, country);
-    out.activePricing = match || null;
-    out.supportedCountries = listSupportedCountries(out);
-  }
-
-  // Attach country-specific hourly rate from the geo_pricing collection so
-  // the customer-facing service object already contains the right price.
-  // This is done asynchronously only when serving the detail endpoint; for
-  // the list endpoint it's done inline below.
-
-  return out;
+  // 3. Recursively flatten every i18n object in the document — name,
+  // description, tagline, technologies[].name, highlights[], inclusions[],
+  // faq[].question, faq[].answer, surgeRules[].name, etc. Frontend axios
+  // interceptor also runs flattenI18nDeep so this is a defence-in-depth
+  // pass: if the request comes from a non-frontend client (curl, mobile,
+  // server-to-server) it still gets a clean flat response.
+  return flattenI18nDeep(intermediate, locale);
 }
 
 r.get('/', asyncHandler(async (req, res) => {

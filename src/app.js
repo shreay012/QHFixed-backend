@@ -12,6 +12,7 @@ import { sentryErrorHandler } from './config/sentry.js';
 import { metricsMiddleware, metricsHandler } from './config/metrics.js';
 import { sanitizeMongo, sanitizeXss } from './middleware/sanitize.middleware.js';
 import { geoMiddleware } from './modules/i18n/geo.middleware.js';
+import cookieParser from 'cookie-parser';
 import routes from './routes.js';
 import { paymentWebhookHandler, stripeWebhookHandler } from './modules/payment/payment.webhook.js';
 
@@ -35,6 +36,9 @@ export function buildApp() {
 
   app.use(express.json({ limit: '1mb' }));
     app.use(express.urlencoded({ extended: true }));
+    // Parse cookies — needed so `req.cookies.qh_locale` and `qh_country`
+    // reach the geo middleware and downstream route projections.
+    app.use(cookieParser());
     app.use(sanitizeMongo);
     app.use(sanitizeXss);
     app.use(geoMiddleware);
