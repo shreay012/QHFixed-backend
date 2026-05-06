@@ -151,4 +151,17 @@ export const CMS_DEFAULTS = {
       ],
     },
   ],
+
+  // Site videos — admin-editable URLs for marketing/explainer videos.
+  // Frontend fetches via GET /api/cms/videos and falls back to bundled
+  // /videos/howWeHire.mp4 if API is unavailable.
+  videos: [
+    {
+      id: 'how-we-hire',
+      title: 'How QuickHire Works',
+      description: 'A short walkthrough of the QuickHire booking flow.',
+      url: '/videos/howWeHire.mp4',
+      poster: '',
+    },
+  ],
 };
