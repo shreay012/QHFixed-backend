@@ -27,6 +27,9 @@ import { PERMS } from '../../config/rbac.js';
 import { redis } from '../../config/redis.js';
 import { enqueueJob, QUEUES } from '../../queue/index.js';
 
+import * as countriesRepo from '../../data/repos/countries.js';
+import * as currenciesRepo from '../../data/repos/currencies.js';
+
 const r = Router();
 
 const countriesCol = () => getDb().collection('countries');
@@ -42,23 +45,42 @@ r.get('/geo', asyncHandler(async (req, res) => {
 
 // GET /api/i18n/countries
 r.get('/countries', asyncHandler(async (_req, res) => {
-  const cached = await redis.get('i18n:countries').catch(() => null);
+  // Cache key includes the active driver so a flip from mongo→postgres
+  // doesn't serve a Mongo-shaped payload to a Postgres consumer (and vice
+  // versa). The 1-hour TTL means at most a 1h re-warm after a flip.
+  const driver = process.env.PG_DRIVER_COUNTRIES === 'postgres' ? 'pg' : 'mongo';
+  const cacheKey = `i18n:countries:${driver}`;
+  const cached = await redis.get(cacheKey).catch(() => null);
   if (cached) return res.json({ success: true, data: JSON.parse(cached) });
 
-  const items = await countriesCol().find({ active: true })
-    .project({ code: 1, name: 1, currency: 1, defaultLang: 1, supportedLangs: 1, phoneFormat: 1 })
-    .toArray();
-  await redis.set('i18n:countries', JSON.stringify(items), 'EX', 3600).catch(() => {});
+  // Repo gateway — falls back to Mongo when PG_URL not set or driver=mongo.
+  // Returns ALL active countries; we project to the public fields after fetch
+  // so both drivers see the same shape (Mongo .project() vs PG SELECT cols).
+  const all = await countriesRepo.findAll();
+  const items = all
+    .filter((c) => c.active !== false)
+    .map((c) => ({
+      _id: c._id,
+      code: c.code,
+      name: c.name,
+      currency: c.currency,
+      defaultLang: c.defaultLang,
+      supportedLangs: c.supportedLangs,
+      phoneFormat: c.phoneFormat,
+    }));
+  await redis.set(cacheKey, JSON.stringify(items), 'EX', 3600).catch(() => {});
   res.json({ success: true, data: items });
 }));
 
 // GET /api/i18n/currencies
 r.get('/currencies', asyncHandler(async (_req, res) => {
-  const cached = await redis.get('i18n:currencies').catch(() => null);
+  const driver = process.env.PG_DRIVER_CURRENCIES === 'postgres' ? 'pg' : 'mongo';
+  const cacheKey = `i18n:currencies:${driver}`;
+  const cached = await redis.get(cacheKey).catch(() => null);
   if (cached) return res.json({ success: true, data: JSON.parse(cached) });
 
-  const items = await currenciesCol().find({}).toArray();
-  await redis.set('i18n:currencies', JSON.stringify(items), 'EX', 3600).catch(() => {});
+  const items = await currenciesRepo.findAll();
+  await redis.set(cacheKey, JSON.stringify(items), 'EX', 3600).catch(() => {});
   res.json({ success: true, data: items });
 }));
 
