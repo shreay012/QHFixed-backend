@@ -102,6 +102,14 @@ export function getQueue(name) {
  * @param {Object} options - Worker options (concurrency, lockDuration, etc)
  */
 export function registerWorker(name, handler, options = {}) {
+  // Allow disabling all workers entirely (Render free tier: no dedicated
+  // queue Redis, plus avoids the upstash eviction-policy warning loop on
+  // boot). Jobs will still be enqueued but no in-process worker picks them
+  // up. Set DISABLE_QUEUE_WORKERS=true to enable.
+  if (String(env.DISABLE_QUEUE_WORKERS || '').toLowerCase() === 'true') {
+    logger.info({ queue: name }, 'worker registration skipped (DISABLE_QUEUE_WORKERS=true)');
+    return null;
+  }
   if (workers[name]) {
     logger.warn({ queue: name }, 'worker already registered');
     return workers[name];
