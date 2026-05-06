@@ -94,16 +94,25 @@ async function hydrateJobs(jobs) {
   });
 }
 
-r.get('/dashboard', asyncHandler(async (_req, res) => {
-  const data = await getOrSet('admin:dashboard:overview', async () => {
+r.get('/dashboard', asyncHandler(async (req, res) => {
+  // Per-scope cache key — country_admin (IN)'s overview must never be served
+  // to country_admin (DE), and super_admin's global view is its own bucket.
+  const scopeMode = req.scope?.mode || 'off';
+  const scopeCountry = req.scope?.filter?.country || 'all';
+  const cacheKey = `admin:dashboard:overview:${scopeMode}:${scopeCountry}`;
+  const data = await getOrSet(cacheKey, async () => {
+    const userScope = applyScope({ role: 'user' }, req);
+    const jobScope  = applyScope({}, req);
+    const paidScope = applyScope({ status: 'paid' }, req);
     const [totalUsers, totalBookings, paidPayments, byStatus] = await Promise.all([
-      usersCol().countDocuments({ role: 'user' }),
-      jobsCol().countDocuments({}),
+      usersCol().countDocuments(userScope),
+      jobsCol().countDocuments(jobScope),
       paymentsCol().aggregate([
-        { $match: { status: 'paid' } },
+        { $match: paidScope },
         { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ]).toArray(),
       jobsCol().aggregate([
+        { $match: jobScope },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).toArray(),
     ]);
@@ -363,22 +372,29 @@ r.get('/payments', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (req, res) 
   res.json({ success: true, data: { payments, total, page: pg, limit: lim } });
 }));
 
-r.get('/payments/stats', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (_req, res) => {
+r.get('/payments/stats', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (req, res) => {
   // KPIs grouped per currency so the dashboard can show "₹4.5M paid /
   // €12k paid / $3.2k paid" side by side instead of mixing currencies.
-  // Cached 60s — payment stats need to feel fresh on the admin home but
-  // 4× heavy aggregations per page load is wasteful at scale.
-  const data = await getOrSet('admin:payments:stats', async () => {
+  // Cached 60s, keyed by scope so country admins see only their data.
+  const scopeMode = req.scope?.mode || 'off';
+  const scopeCountry = req.scope?.filter?.country || 'all';
+  const cacheKey = `admin:payments:stats:${scopeMode}:${scopeCountry}`;
+  const data = await getOrSet(cacheKey, async () => {
+    const baseScope = applyScope({}, req);
+    const paidScope = applyScope({ status: 'paid' }, req);
+    const mockScope = applyScope({ mock: true }, req);
     const [byStatus, byCurrency, mockCount, gatewayBreakdown] = await Promise.all([
       paymentsCol().aggregate([
+        { $match: baseScope },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).toArray(),
       paymentsCol().aggregate([
-        { $match: { status: 'paid' } },
+        { $match: paidScope },
         { $group: { _id: '$currency', total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ]).toArray(),
-      paymentsCol().countDocuments({ mock: true }),
+      paymentsCol().countDocuments(mockScope),
       paymentsCol().aggregate([
+        { $match: baseScope },
         { $group: { _id: '$provider', count: { $sum: 1 }, total: { $sum: '$amount' } } },
       ]).toArray(),
     ]);
@@ -403,19 +419,32 @@ r.get('/payments/:id', permGuard(PERMS.PAYMENT_READ), asyncHandler(async (req, r
     });
   }
   if (!payment) throw new AppError('RESOURCE_NOT_FOUND', 'Payment not found', 404);
+  // 404 (not 403) on cross-country payment access — don't leak existence.
+  if (isOutOfScope(payment, req)) throw new AppError('RESOURCE_NOT_FOUND', 'Payment not found', 404);
   const [hydrated] = await hydratePayments([payment]);
   res.json({ success: true, data: hydrated });
 }));
 
+// Helper: load a booking by id, ensure caller's scope can touch it.
+// Returns the booking or throws 404 (uses isOutOfScope so cross-country
+// callers get the same error as a missing booking — no existence leak).
+async function loadScopedBooking(req, idLike) {
+  const id = toObjectId(idLike);
+  const job = await jobsCol().findOne({ _id: id });
+  if (!job) throw new AppError('RESOURCE_NOT_FOUND', 'Booking not found', 404);
+  if (isOutOfScope(job, req)) throw new AppError('RESOURCE_NOT_FOUND', 'Booking not found', 404);
+  return { id, job };
+}
+
 r.patch('/bookings/:id/confirm', permGuard(PERMS.BOOKING_WRITE), asyncHandler(async (req, res) => {
-  const id = toObjectId(req.params.id);
+  const { id } = await loadScopedBooking(req, req.params.id);
   await jobsCol().updateOne({ _id: id }, { $set: { status: 'confirmed', updatedAt: new Date() } });
   const updated = await jobsCol().findOne({ _id: id });
   res.json({ success: true, data: updated });
 }));
 
 r.patch('/bookings/:id/reject', permGuard(PERMS.BOOKING_WRITE), asyncHandler(async (req, res) => {
-  const id = toObjectId(req.params.id);
+  const { id } = await loadScopedBooking(req, req.params.id);
   await jobsCol().updateOne(
     { _id: id },
     { $set: { status: 'cancelled', cancelReason: req.body?.reason || '', updatedAt: new Date() } },
@@ -425,7 +454,7 @@ r.patch('/bookings/:id/reject', permGuard(PERMS.BOOKING_WRITE), asyncHandler(asy
 }));
 
 r.post('/bookings/:id/confirm', permGuard(PERMS.BOOKING_WRITE), asyncHandler(async (req, res) => {
-  const id = toObjectId(req.params.id);
+  const { id } = await loadScopedBooking(req, req.params.id);
   await jobsCol().updateOne({ _id: id }, { $set: { status: 'confirmed', updatedAt: new Date() } });
   const updated = await jobsCol().findOne({ _id: id });
   res.json({ success: true, data: updated });
@@ -435,7 +464,13 @@ const assignSchema = z.object({ pmId: z.string().regex(/^[0-9a-f]{24}$/) });
 r.post('/bookings/:id/assign-pm', permGuard(PERMS.BOOKING_WRITE), validate(assignSchema), asyncHandler(async (req, res) => {
   const pm = await usersCol().findOne({ _id: toObjectId(req.body.pmId, 'pmId'), role: 'pm' });
   if (!pm) throw new AppError('RESOURCE_NOT_FOUND', 'PM not found', 404);
-  const id = toObjectId(req.params.id);
+  const { id, job } = await loadScopedBooking(req, req.params.id);
+  // Block cross-country assignments: a country_admin (IN) can't assign
+  // an AE-based PM to an IN booking. Super admin is unconstrained because
+  // their scope filter is empty.
+  if (job.country && pm.country && pm.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
+    throw new AppError('VALIDATION_ERROR', `PM is in ${pm.country} but booking is in ${job.country}`, 422);
+  }
   await jobsCol().updateOne(
     { _id: id },
     { $set: { pmId: pm._id, projectManager: { _id: pm._id, name: pm.name, mobile: pm.mobile }, status: 'assigned_to_pm', updatedAt: new Date() } },
@@ -478,7 +513,10 @@ const assignResSchema = z.object({
 r.post('/bookings/:id/assign-resource', permGuard(PERMS.BOOKING_WRITE), validate(assignResSchema), asyncHandler(async (req, res) => {
   const resource = await usersCol().findOne({ _id: toObjectId(req.body.resourceId, 'resourceId'), role: 'resource' });
   if (!resource) throw new AppError('RESOURCE_NOT_FOUND', 'Resource not found', 404);
-  const id = toObjectId(req.params.id);
+  const { id, job } = await loadScopedBooking(req, req.params.id);
+  if (job.country && resource.country && resource.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
+    throw new AppError('VALIDATION_ERROR', `Resource is in ${resource.country} but booking is in ${job.country}`, 422);
+  }
 
   // Prevent double-booking: reject if resource already has an active assignment.
   const ACTIVE_STATUSES = ['assigned_to_pm', 'in_progress', 'paused'];
@@ -983,20 +1021,30 @@ r.post('/super-admins', permGuard(PERMS.RBAC_WRITE), validate(superAdminSchema),
 //                            refreshes don't need fresh aggregates)
 // Cache misses fall through to the original aggregation; misses are
 // the first request after TTL expiry, then ~0 during the steady state.
-r.get('/dashboard/stats', asyncHandler(async (_req, res) => {
-  const data = await getOrSet('admin:dashboard:stats', async () => {
+r.get('/dashboard/stats', asyncHandler(async (req, res) => {
+  const scopeMode = req.scope?.mode || 'off';
+  const scopeCountry = req.scope?.filter?.country || 'all';
+  const cacheKey = `admin:dashboard:stats:${scopeMode}:${scopeCountry}`;
+  const data = await getOrSet(cacheKey, async () => {
+    const userScope    = applyScope({ role: 'user' }, req);
+    const jobAllScope  = applyScope({}, req);
+    const pendingScope = applyScope({ status: { $in: ['pending', 'confirmed'] } }, req);
+    const activeScope  = applyScope({ status: { $in: ['assigned_to_pm', 'in_progress'] } }, req);
+    const pmScope      = applyScope({ role: 'pm' }, req);
+    const resScope     = applyScope({ role: 'resource' }, req);
+    const revScope     = applyScope({ status: { $nin: ['cancelled'] } }, req);
     const [
       totalCustomers, totalBookings, pendingBookings, activeJobs,
       totalPMs, totalResources, paidAgg,
     ] = await Promise.all([
-      usersCol().countDocuments({ role: 'user' }),
-      jobsCol().countDocuments({}),
-      jobsCol().countDocuments({ status: { $in: ['pending', 'confirmed'] } }),
-      jobsCol().countDocuments({ status: { $in: ['assigned_to_pm', 'in_progress'] } }),
-      usersCol().countDocuments({ role: 'pm' }),
-      usersCol().countDocuments({ role: 'resource' }),
+      usersCol().countDocuments(userScope),
+      jobsCol().countDocuments(jobAllScope),
+      jobsCol().countDocuments(pendingScope),
+      jobsCol().countDocuments(activeScope),
+      usersCol().countDocuments(pmScope),
+      usersCol().countDocuments(resScope),
       jobsCol().aggregate([
-        { $match: { status: { $nin: ['cancelled'] } } },
+        { $match: revScope },
         { $group: { _id: null, total: { $sum: { $ifNull: ['$pricing.total', 0] } } } },
       ]).toArray(),
     ]);
@@ -1013,11 +1061,15 @@ r.get('/dashboard/stats', asyncHandler(async (_req, res) => {
   res.json({ success: true, data });
 }));
 
-r.get('/dashboard/revenue', asyncHandler(async (_req, res) => {
-  const data = await getOrSet('admin:dashboard:revenue:6m', async () => {
+r.get('/dashboard/revenue', asyncHandler(async (req, res) => {
+  const scopeMode = req.scope?.mode || 'off';
+  const scopeCountry = req.scope?.filter?.country || 'all';
+  const cacheKey = `admin:dashboard:revenue:6m:${scopeMode}:${scopeCountry}`;
+  const data = await getOrSet(cacheKey, async () => {
     const since = new Date(); since.setMonth(since.getMonth() - 6);
+    const match = applyScope({ status: { $nin: ['cancelled'] }, createdAt: { $gte: since } }, req);
     const rows = await jobsCol().aggregate([
-      { $match: { status: { $nin: ['cancelled'] }, createdAt: { $gte: since } } },
+      { $match: match },
       { $group: {
         _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
         revenue: { $sum: { $ifNull: ['$pricing.total', 0] } },
@@ -1029,7 +1081,7 @@ r.get('/dashboard/revenue', asyncHandler(async (_req, res) => {
   res.json({ success: true, data });
 }));
 
-r.get('/dashboard/recent-activity', asyncHandler(async (_req, res) => {
+r.get('/dashboard/recent-activity', asyncHandler(async (req, res) => {
   // Cache key includes scope.mode so country admins don't see super_admin's
   // cached recent activity. (cache:30s).
   const cacheKey = `admin:dashboard:recent:${req.scope?.mode || 'off'}:${req.scope?.filter?.country || 'all'}`;
