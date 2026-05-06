@@ -45,9 +45,16 @@ export function buildApp() {
 
   app.use(metricsMiddleware);
     app.use(rateLimit());
-    app.use(authMiddleware);
 
-  app.use(routes);
+  // Mount API routes under /api prefix. Auth middleware runs INSIDE the /api
+  // mount so Express strips the prefix before matching against PUBLIC_PREFIXES
+  // (e.g. /api/services → req.path becomes /services for the middleware).
+  // Webhooks (/payments/webhook) are mounted at root above and bypass auth.
+  app.use('/api', authMiddleware, routes);
+
+  // Back-compat: also expose routes at root for any internal/legacy callers
+  // (Render direct URLs, health probes, mobile apps with old base URLs).
+  app.use(authMiddleware, routes);
 
   app.use(notFoundMiddleware);
     app.use(sentryErrorHandler());
