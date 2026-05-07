@@ -16,9 +16,10 @@ services:
       POSTGRES_DB: quickhire
       POSTGRES_USER: quickhire
       POSTGRES_PASSWORD: quickhire
-    # Port 5433 on host so it doesn't clash with a Homebrew Postgres on 5432.
+    # Host port 5434 — avoids clash with Homebrew PG (5432) and any
+    # EnterpriseDB PG (5433) that may be installed alongside.
     # Inside the compose network, services connect via "postgres:5432".
-    ports: ["5433:5432"]
+    ports: ["5434:5432"]
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Auto-restore the dump bundle on first boot (only when pg_data is empty).
