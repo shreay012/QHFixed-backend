@@ -15,7 +15,7 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { getMeili, isMeiliReady, indexBooking, indexResource, indexArticle } from '../../config/meilisearch.js';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { PERMS } from '../../config/rbac.js';
 import { paginate } from '../../utils/pagination.js';
 import { logger } from '../../config/logger.js';
@@ -47,7 +47,7 @@ r.get('/bookings', adminGuard, permGuard(PERMS.BOOKING_READ), validate(searchQue
   }
 
   // MongoDB fallback
-  const jobsCol = getDb().collection('jobs');
+  const jobsCol = getDualDb().collection('jobs');
   const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
   const cursor = jobsCol.find({ $or: [{ serviceTitle: regex }, { customerName: regex }, { customerMobile: regex }] });
   const [items, total] = await Promise.all([
@@ -73,7 +73,7 @@ r.get('/resources', adminGuard, validate(searchQuerySchema, 'query'), asyncHandl
     return res.json({ success: true, data: result.hits, meta: { total: result.estimatedTotalHits, page: +page, pageSize: +pageSize } });
   }
 
-  const usersCol = getDb().collection('users');
+  const usersCol = getDualDb().collection('users');
   const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
   const items = await usersCol.find({
     role: { $in: ['pm', 'resource'] },
@@ -101,7 +101,7 @@ r.get('/articles', validate(searchQuerySchema, 'query'), asyncHandler(async (req
   }
 
   // MongoDB fallback
-  const articlesCol = getDb().collection('cms_articles');
+  const articlesCol = getDualDb().collection('cms_articles');
   const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
   const items = await articlesCol.find({
     status: 'published',

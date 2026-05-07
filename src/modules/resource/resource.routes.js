@@ -6,7 +6,7 @@ import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
 import { applyScope } from '../../utils/scope.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { enqueueNotification } from '../notification/notification.service.js';
 import { emitTo } from '../../socket/index.js';
@@ -15,13 +15,13 @@ import { getOrSet } from '../../utils/cache.js';
 const r = Router();
 
 // Bookings live in `jobs` (v3). Use that consistently.
-const jobsCol         = () => getDb().collection('jobs');
-const usersCol        = () => getDb().collection('users');
-const servicesCol     = () => getDb().collection('services');
-const timeLogsCol     = () => getDb().collection('resource_time_logs');
-const updatesCol      = () => getDb().collection('resource_work_updates');
-const deliverablesCol = () => getDb().collection('resource_deliverables');
-const chatCol         = () => getDb().collection('chat');
+const jobsCol         = () => getDualDb().collection('jobs');
+const usersCol        = () => getDualDb().collection('users');
+const servicesCol     = () => getDualDb().collection('services');
+const timeLogsCol     = () => getDualDb().collection('resource_time_logs');
+const updatesCol      = () => getDualDb().collection('resource_work_updates');
+const deliverablesCol = () => getDualDb().collection('resource_deliverables');
+const chatCol         = () => getDualDb().collection('chat');
 
 // Public-ish: any authenticated staff/customer can fetch a resource profile.
 r.get('/:id/profile', roleGuard(['user', 'pm', 'admin', 'resource']), asyncHandler(async (req, res) => {

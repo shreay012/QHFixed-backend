@@ -1,8 +1,8 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 
-const col = () => getDb().collection('bookings');
-const histCol = () => getDb().collection('booking_histories');
+const col = () => getDualDb().collection('bookings');
+const histCol = () => getDualDb().collection('booking_histories');
 
 export const insert = async (doc) => {
   const r = await col().insertOne(doc);

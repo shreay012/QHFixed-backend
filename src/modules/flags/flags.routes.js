@@ -16,7 +16,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -24,7 +24,7 @@ import { PERMS } from '../../config/rbac.js';
 import { redis } from '../../config/redis.js';
 
 const r = Router();
-const flagsCol = () => getDb().collection('feature_flags');
+const flagsCol = () => getDualDb().collection('feature_flags');
 
 function isEnabledForUser(flag, userId) {
   if (!flag.enabled) return false;

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { sanitizeUser } from '../auth/auth.service.js';
 import { AppError } from '../../utils/AppError.js';
@@ -15,7 +15,7 @@ import { nanoid } from 'nanoid';
 
 const r = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
-const usersCol = () => getDb().collection('users');
+const usersCol = () => getDualDb().collection('users');
 
 const profileSchema = z.object({
   name: z.string().min(1).max(120).optional(),

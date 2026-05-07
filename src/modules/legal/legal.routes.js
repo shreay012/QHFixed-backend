@@ -27,7 +27,7 @@ import { ObjectId } from 'mongodb';
 import { adminGuard, permGuard, roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
@@ -36,8 +36,8 @@ import { getCountryConfig, ACTIVE_COUNTRY_CODES } from '../../config/country.con
 
 const r = Router();
 
-const docsCol = () => getDb().collection('legal_documents');
-const acceptancesCol = () => getDb().collection('legal_acceptances');
+const docsCol = () => getDualDb().collection('legal_documents');
+const acceptancesCol = () => getDualDb().collection('legal_acceptances');
 
 const DOC_TYPES = ['terms-of-service', 'privacy-policy', 'refund-policy'];
 

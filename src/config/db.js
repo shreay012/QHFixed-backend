@@ -64,6 +64,49 @@ export function getDb() {
   return db;
 }
 
+/**
+ * getDualDb — returns a Mongo-compatible db handle whose `.collection(name)`
+ * returns the dual-driver wrapper (Mongo or Postgres per PG_DRIVER_<TABLE>).
+ *
+ * Route handlers can switch from `getDb().collection(name)` to
+ * `getDualDb().collection(name)` and gain Postgres routing without changing
+ * a single query. The wrapper preserves the Mongo collection API surface
+ * (find/findOne/insertOne/updateOne/etc.) — see src/data/dualCollection.js.
+ *
+ * For the 5 strict-schema tables (countries, currencies, services, users,
+ * sessions), prefer the typed repos in src/data/repos/*.js — they handle
+ * the richer columnar shape better than the generic JSONB adapter.
+ */
+let _dualColFn = null;
+export function getDualDb() {
+  if (!db) throw new Error('DB not connected');
+  return {
+    collection: (name) => {
+      // Lazy ESM import (cached after first call) to avoid the circular
+      // dependency that `dualCol` → `getDb` would create at module-load time.
+      if (!_dualColFn) {
+        // Dynamic import returns a Promise — but we need sync here.
+        // Use a tiny synchronous bootstrap: load via the already-resolved
+        // module graph if available, else fall back to native Mongo.
+        try {
+          // eslint-disable-next-line no-undef
+          _dualColFn = globalThis.__QH_DUAL_COL__;
+        } catch { /* ignored */ }
+      }
+      if (_dualColFn) return _dualColFn(name);
+      // Fallback (initial calls before bootstrap completes): direct Mongo.
+      return db.collection(name);
+    },
+  };
+}
+
+// Bootstrap called by app entry point to wire dualCol after both modules load
+export function bindDualCol(fn) {
+  _dualColFn = fn;
+  // eslint-disable-next-line no-undef
+  globalThis.__QH_DUAL_COL__ = fn;
+}
+
 export async function closeDb() {
   if (client) await client.close();
 }

@@ -15,7 +15,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -25,8 +25,8 @@ import { redis } from '../../config/redis.js';
 
 const r = Router();
 
-const jobsCol = () => getDb().collection('jobs');
-const rescheduleHistoryCol = () => getDb().collection('reschedule_history');
+const jobsCol = () => getDualDb().collection('jobs');
+const rescheduleHistoryCol = () => getDualDb().collection('reschedule_history');
 
 /* ═══════════════════════════════════════════════════════════════
    CANCELLATION RULES

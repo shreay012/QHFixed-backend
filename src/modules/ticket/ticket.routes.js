@@ -4,15 +4,15 @@ import { ObjectId } from 'mongodb';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { emitTo } from '../../socket/index.js';
 
 const r = Router();
-const tickets = () => getDb().collection('tickets');
-const messages = () => getDb().collection('ticket_messages');
+const tickets = () => getDualDb().collection('tickets');
+const messages = () => getDualDb().collection('ticket_messages');
 
 const createSchema = z.object({
   subject: z.string().min(2).max(200),

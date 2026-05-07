@@ -14,7 +14,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -25,9 +25,9 @@ const r = Router();
 r.use(adminGuard);
 r.use(auditAdmin);
 
-const usersCol = () => getDb().collection('users');
-const leavesCol = () => getDb().collection('staff_leaves');
-const kycCol = () => getDb().collection('kyc_documents');
+const usersCol = () => getDualDb().collection('users');
+const leavesCol = () => getDualDb().collection('staff_leaves');
+const kycCol = () => getDualDb().collection('kyc_documents');
 
 /* ═══════════════════════════════════════════════════════════════
    STAFF PROFILE — skills + capacity
@@ -80,7 +80,7 @@ r.get('/staff/:id', permGuard(PERMS.POOL_READ), asyncHandler(async (req, res) =>
   if (!u) throw new AppError('RESOURCE_NOT_FOUND', 'Staff member not found', 404);
 
   // Attach active booking count
-  const activeBookings = await getDb().collection('jobs').countDocuments({
+  const activeBookings = await getDualDb().collection('jobs').countDocuments({
     $or: [{ pmId: u._id }, { resourceId: u._id }],
     status: { $in: ['assigned_to_pm', 'in_progress'] },
   });
@@ -149,7 +149,7 @@ r.post('/leaves', permGuard(PERMS.POOL_WRITE), validate(leaveSchema), asyncHandl
   if (from >= to) throw new AppError('VALIDATION_ERROR', 'from must be before to', 400);
 
   // Check for conflicting active bookings during leave period
-  const conflicts = await getDb().collection('jobs').countDocuments({
+  const conflicts = await getDualDb().collection('jobs').countDocuments({
     $or: [{ pmId: staffId }, { resourceId: staffId }],
     status: { $in: ['assigned_to_pm', 'in_progress'] },
     'schedule.startTime': { $lte: to },
@@ -266,7 +266,7 @@ r.get('/capacity', permGuard(PERMS.POOL_READ), asyncHandler(async (req, res) => 
   const staffIds = staff.map((s) => s._id);
   const fieldKey = role === 'pm' ? 'pmId' : 'resourceId';
 
-  const activeByStaff = await getDb().collection('jobs').aggregate([
+  const activeByStaff = await getDualDb().collection('jobs').aggregate([
     { $match: { [fieldKey]: { $in: staffIds }, status: { $in: ['assigned_to_pm', 'in_progress'] } } },
     { $group: { _id: `$${fieldKey}`, active: { $sum: 1 } } },
   ]).toArray();

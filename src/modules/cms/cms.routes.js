@@ -4,14 +4,14 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { PERMS } from '../../config/rbac.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { redis } from '../../config/redis.js';
 import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/AppError.js';
 import { CMS_DEFAULTS } from './cms.defaults.js';
 
 const r = Router();
-const col = () => getDb().collection('cms_content');
+const col = () => getDualDb().collection('cms_content');
 
 const CACHE_KEY = (key) => `cache:cms:${key}`;
 const CACHE_TTL = 300; // 5 min

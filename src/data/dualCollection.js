@@ -67,7 +67,16 @@ const COL_MAP = {
   updatedAt: 'updated_at',
 };
 
+// Strict-schema tables have explicit columns (no generic `data` JSONB).
+// dualCol's translator assumes the generic mirror schema, so for these
+// tables we keep reads on Mongo and let the typed repos in
+// src/data/repos/*.js handle Postgres routing where it actually applies.
+const STRICT_SCHEMA_TABLES = new Set([
+  'countries', 'currencies', 'services', 'users', 'sessions',
+]);
+
 function pgDriverEnabled(table) {
+  if (STRICT_SCHEMA_TABLES.has(table)) return false;
   // env keys are uppercase: PG_DRIVER_BOOKINGS, PG_DRIVER_JOBS etc.
   // Tables we don't have explicit env entries for default to mongo.
   const key = `PG_DRIVER_${table.toUpperCase()}`;

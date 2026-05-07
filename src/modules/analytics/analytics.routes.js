@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { redis } from '../../config/redis.js';
 import { PERMS } from '../../config/rbac.js';
 
@@ -25,9 +25,9 @@ const r = Router();
 r.use(adminGuard);
 r.use(permGuard(PERMS.DASHBOARD_READ));
 
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
-const paymentsCol = () => getDb().collection('payments');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
+const paymentsCol = () => getDualDb().collection('payments');
 
 /* ─── helpers ────────────────────────────────────────────────── */
 async function cached(key, ttl, fn) {

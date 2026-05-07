@@ -177,7 +177,7 @@ export async function getById(id, user) {
   const { getDb } = await import('../../config/db.js');
   let jobId;
   try { jobId = new ObjectId(String(id)); } catch { return null; }
-  const job = await getDb().collection('jobs').findOne({ _id: jobId });
+  const job = await getDualDb().collection('jobs').findOne({ _id: jobId });
   if (!job) return null;
   const isOwner = String(job.userId) === user.id;
   const isPm = job.pmId && String(job.pmId) === user.id;
@@ -189,7 +189,7 @@ export async function getById(id, user) {
   const firstSvcId = job.services?.[0]?.serviceId || job.serviceId;
   if (firstSvcId) {
     try {
-      serviceDoc = await getDb().collection('services').findOne({ _id: new ObjectId(String(firstSvcId)) });
+      serviceDoc = await getDualDb().collection('services').findOne({ _id: new ObjectId(String(firstSvcId)) });
     } catch {}
   }
   return {
@@ -203,8 +203,8 @@ export async function getById(id, user) {
 export async function listForCustomer({ userId, statuses, page, pageSize }) {
   const p = paginate({ page, pageSize });
   const { getDb } = await import('../../config/db.js');
-  const jobsCol = getDb().collection('jobs');
-  const servicesCol = getDb().collection('services');
+  const jobsCol = getDualDb().collection('jobs');
+  const servicesCol = getDualDb().collection('services');
 
   const filter = { userId: new ObjectId(userId) };
   if (statuses?.length) {

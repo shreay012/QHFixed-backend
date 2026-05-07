@@ -14,7 +14,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -23,9 +23,9 @@ import { enqueueJob, QUEUES } from '../../queue/index.js';
 
 const r = Router();
 
-const reviewsCol = () => getDb().collection('reviews');
-const tipsCol = () => getDb().collection('tips');
-const jobsCol = () => getDb().collection('jobs');
+const reviewsCol = () => getDualDb().collection('reviews');
+const tipsCol = () => getDualDb().collection('tips');
+const jobsCol = () => getDualDb().collection('jobs');
 
 /* ─── Submit Review ──────────────────────────────────────────── */
 const reviewSchema = z.object({

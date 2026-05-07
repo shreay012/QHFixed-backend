@@ -20,7 +20,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -30,8 +30,8 @@ import { redis } from '../../config/redis.js';
 
 const r = Router();
 
-const codesCol = () => getDb().collection('promo_codes');
-const redemptionsCol = () => getDb().collection('promo_redemptions');
+const codesCol = () => getDualDb().collection('promo_codes');
+const redemptionsCol = () => getDualDb().collection('promo_redemptions');
 
 /* ═══════════════════════════════════════════════════════════════
    SCHEMA
@@ -174,7 +174,7 @@ adminRouter.get('/:id/preview', permGuard(PERMS.PROMO_READ), asyncHandler(async 
   if (doc.minCartValue) jobFilter['pricing.total'] = { $gte: doc.minCartValue };
 
   const [eligibleJobs, existingRedemptions] = await Promise.all([
-    getDb().collection('jobs').countDocuments(jobFilter),
+    getDualDb().collection('jobs').countDocuments(jobFilter),
     redemptionsCol().countDocuments({ codeId: doc._id }),
   ]);
 

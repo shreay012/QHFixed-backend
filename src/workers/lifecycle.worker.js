@@ -3,7 +3,7 @@
 // once their schedule has started, and into completed once it has ended.
 // Idempotent: only updates jobs whose status doesn't already match.
 import { ObjectId } from 'mongodb';
-import { getDb } from '../config/db.js';
+import { getDb, getDualDb } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { emitTo } from '../socket/index.js';
 import { enqueueNotification } from '../modules/notification/notification.service.js';
@@ -44,8 +44,8 @@ function resolveWindow(job) {
 
 async function tick() {
   const now = new Date();
-  const jobs = getDb().collection('jobs');
-  const histories = getDb().collection('booking_histories');
+  const jobs = getDualDb().collection('jobs');
+  const histories = getDualDb().collection('booking_histories');
 
   // Pull recent candidates (cap to avoid scanning the whole collection).
   const candidates = await jobs.find({

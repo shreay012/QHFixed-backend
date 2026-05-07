@@ -5,7 +5,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { rateLimitSearch } from '../../middleware/rateLimit.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { redis } from '../../config/redis.js';
 import { clearCachePattern, deleteCacheValue, getOrSet } from '../../utils/cache.js';
 import { CACHE_KEYS } from '../../utils/cache.keys.js';
@@ -40,12 +40,12 @@ async function invalidateServicesCache(id) {
   } catch { /* Redis errors must never crash the admin action */ }
 }
 
-const bookingsCol = () => getDb().collection('bookings');
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
-const paymentsCol = () => getDb().collection('payments');
-const ticketsCol = () => getDb().collection('tickets');
-const servicesCol = () => getDb().collection('services');
+const bookingsCol = () => getDualDb().collection('bookings');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
+const paymentsCol = () => getDualDb().collection('payments');
+const ticketsCol = () => getDualDb().collection('tickets');
+const servicesCol = () => getDualDb().collection('services');
 
 // Build hydrated job rows (customerName + serviceName + amount + pmName + resourceName) for FE tables.
 async function hydrateJobs(jobs) {
@@ -1184,7 +1184,7 @@ r.put('/scheduling-config', permGuard(PERMS.SCHEDULE_WRITE), validate(z.object({
 /* ─────────────────────────────────────────────────────────────
  * Admin: booking-scoped group chat (read + send as admin)
  * ───────────────────────────────────────────────────────────── */
-const chatCol = () => getDb().collection('chat');
+const chatCol = () => getDualDb().collection('chat');
 const bookingRoomId = (id) => `booking_${String(id)}`;
 
 r.get('/bookings/:id/messages', asyncHandler(async (req, res) => {
@@ -1242,7 +1242,7 @@ r.get('/tickets/:id/detail', asyncHandler(async (req, res) => {
   const ticketId = toObjectId(req.params.id);
   const ticket = await ticketsCol().findOne({ _id: ticketId });
   if (!ticket) throw new AppError('RESOURCE_NOT_FOUND', 'Ticket not found', 404);
-  const messagesCol = getDb().collection('ticket_messages');
+  const messagesCol = getDualDb().collection('ticket_messages');
   const messages = await messagesCol.find({ ticketId }).sort({ createdAt: 1 }).toArray();
   let user = null;
   try { user = await usersCol().findOne({ _id: ticket.userId }, { projection: { name: 1, mobile: 1, email: 1 } }); } catch {}
@@ -1256,7 +1256,7 @@ r.post('/tickets/:id/message',
     const ticketId = toObjectId(req.params.id);
     const ticket = await ticketsCol().findOne({ _id: ticketId });
     if (!ticket) throw new AppError('RESOURCE_NOT_FOUND', 'Ticket not found', 404);
-    const messagesCol = getDb().collection('ticket_messages');
+    const messagesCol = getDualDb().collection('ticket_messages');
     const doc = {
       ticketId,
       senderId: new ObjectId(req.user.id),
@@ -1297,13 +1297,13 @@ r.get('/resources-list', asyncHandler(async (_req, res) => {
 
 /* Admin: CMS list + update (proxy to /cms admin endpoints, but exposed under /admin) */
 r.get('/cms', asyncHandler(async (_req, res) => {
-  const cmsCol = getDb().collection('cms_content');
+  const cmsCol = getDualDb().collection('cms_content');
   const items = await cmsCol.find({}).toArray();
   res.json({ success: true, data: items });
 }));
 
 r.get('/cms/:key', asyncHandler(async (req, res) => {
-  const cmsCol = getDb().collection('cms_content');
+  const cmsCol = getDualDb().collection('cms_content');
   const doc = await cmsCol.findOne({ key: req.params.key });
   res.json({ success: true, data: doc || { key: req.params.key, items: [] } });
 }));
@@ -1312,7 +1312,7 @@ r.put('/cms/:key',
   permGuard(PERMS.CMS_WRITE),
   validate(z.object({ items: z.array(z.any()) })),
   asyncHandler(async (req, res) => {
-    const cmsCol = getDb().collection('cms_content');
+    const cmsCol = getDualDb().collection('cms_content');
     await cmsCol.updateOne(
       { key: req.params.key },
       { $set: { key: req.params.key, items: req.body.items, updatedAt: new Date() } },

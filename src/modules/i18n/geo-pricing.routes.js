@@ -12,7 +12,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -22,7 +22,7 @@ import { clearCachePattern, deleteCacheValue } from '../../utils/cache.js';
 import { CACHE_KEYS } from '../../utils/cache.keys.js';
 
 const r = Router();
-const geoPricingCol = () => getDb().collection('geo_pricing');
+const geoPricingCol = () => getDualDb().collection('geo_pricing');
 
 // GEO_PRICING_CACHE_INVALIDATION_V1: when admin updates a per-country price,
 // purge the same caches the services module owns so the next customer GET
@@ -50,7 +50,7 @@ r.get('/price/:serviceId', asyncHandler(async (req, res) => {
   }
 
   // Fallback to service's default price
-  const svc = await getDb().collection('services').findOne({ _id: serviceId }, { projection: { hourlyRate: 1, pricing: 1 } });
+  const svc = await getDualDb().collection('services').findOne({ _id: serviceId }, { projection: { hourlyRate: 1, pricing: 1 } });
   if (!svc) throw new AppError('RESOURCE_NOT_FOUND', 'Service not found', 404);
 
   const basePrice = svc.hourlyRate || svc.pricing?.hourly || 0;

@@ -13,7 +13,7 @@
 import { Router } from 'express';
 import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { redis } from '../../config/redis.js';
 import { toObjectId } from '../../utils/oid.js';
 import { AppError } from '../../utils/AppError.js';
@@ -23,9 +23,9 @@ const r = Router();
 r.use(adminGuard);
 r.use(permGuard(PERMS.POOL_READ));
 
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
-const reviewsCol = () => getDb().collection('reviews');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
+const reviewsCol = () => getDualDb().collection('reviews');
 
 async function computeScorecard(staffId, role) {
   const oid = toObjectId(staffId);

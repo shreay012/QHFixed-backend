@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../config/db.js';
+import { getDb, getDualDb } from '../config/db.js';
 import { logger } from '../config/logger.js';
 import { emitTo } from '../socket/index.js';
 import { QUEUES, enqueueJob, getQueue } from './index.js';
@@ -56,8 +56,8 @@ function resolveWindow(job) {
  */
 export async function handleLifecycleTick(job) {
   const now = new Date();
-  const jobs = getDb().collection('jobs');
-  const histories = getDb().collection('booking_histories');
+  const jobs = getDualDb().collection('jobs');
+  const histories = getDualDb().collection('booking_histories');
 
   let processed = 0;
   let errors = 0;

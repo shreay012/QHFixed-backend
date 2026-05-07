@@ -1,5 +1,5 @@
 import { ObjectId } from 'mongodb';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 
 // Two fixed slots per day (IST). Length is informational; capacity is per-slot.
 export const FIXED_SLOTS = [
@@ -12,9 +12,9 @@ export const DEFAULT_SLOT_CAPACITY = 5; // resources per slot
 export const MIN_LEAD_MINUTES = 60;     // same-day slot must have ≥ 1 hour remaining
 export const INSTANT_LEAD_MINUTES = 10; // instant = next 10 min
 
-const cfgCol = () => getDb().collection('system_config');
-const bookingsCol = () => getDb().collection('bookings');
-const jobsCol = () => getDb().collection('jobs');
+const cfgCol = () => getDualDb().collection('system_config');
+const bookingsCol = () => getDualDb().collection('bookings');
+const jobsCol = () => getDualDb().collection('jobs');
 
 export async function getSchedulingConfig() {
   const doc = await cfgCol().findOne({ key: 'scheduling' });

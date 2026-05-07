@@ -18,7 +18,7 @@ import { asyncHandler } from '../../utils/asyncHandler.js';
 import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { rateLimitPayment } from '../../middleware/rateLimit.middleware.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/AppError.js';
@@ -34,8 +34,8 @@ import { buildInvoiceBreakdown } from '../../config/country.config.js';
 import { renderInvoicePdf } from '../../lib/invoice/renderInvoicePdf.js';
 
 const r = Router();
-const col = () => getDb().collection('payments');
-const jobsCol = () => getDb().collection('jobs');
+const col = () => getDualDb().collection('payments');
+const jobsCol = () => getDualDb().collection('jobs');
 
 /* ══════════════════════════════════════════════════════════════════
    SCHEMAS

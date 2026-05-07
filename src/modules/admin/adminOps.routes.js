@@ -13,7 +13,7 @@ import { adminGuard, permGuard } from '../../middleware/role.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { ObjectId } from 'mongodb';
 import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
@@ -26,14 +26,14 @@ const r = Router();
 r.use(adminGuard);
 r.use(auditAdmin);
 
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
-const paymentsCol = () => getDb().collection('payments');
-const refundsCol = () => getDb().collection('refunds');
-const payoutsCol = () => getDb().collection('payouts');
-const ticketsCol = () => getDb().collection('tickets');
-const auditCol = () => getDb().collection('audit_logs');
-const reviewsCol = () => getDb().collection('reviews');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
+const paymentsCol = () => getDualDb().collection('payments');
+const refundsCol = () => getDualDb().collection('refunds');
+const payoutsCol = () => getDualDb().collection('payouts');
+const ticketsCol = () => getDualDb().collection('tickets');
+const auditCol = () => getDualDb().collection('audit_logs');
+const reviewsCol = () => getDualDb().collection('reviews');
 
 /* ═══════════════════════════════════════════════════════════════
    BOOKING REASSIGNMENT

@@ -4,16 +4,53 @@ services:
     image: mongo:7
     ports: ["27017:27017"]
     volumes: [mongo_data:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: quickhire
+      POSTGRES_USER: quickhire
+      POSTGRES_PASSWORD: quickhire
+    # Port 5433 on host so it doesn't clash with a Homebrew Postgres on 5432.
+    # Inside the compose network, services connect via "postgres:5432".
+    ports: ["5433:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Auto-restore the dump bundle on first boot (only when pg_data is empty).
+      - ./db/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quickhire -d quickhire"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   api:
     build: .
     env_file: .env
     ports: ["4000:4000"]
-    depends_on: [mongo, redis]
+    depends_on:
+      mongo:    { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
     environment:
       MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379
+      PG_URL: postgres://quickhire:quickhire@postgres:5432/quickhire
+
 volumes:
   mongo_data: {}
+  pg_data: {}

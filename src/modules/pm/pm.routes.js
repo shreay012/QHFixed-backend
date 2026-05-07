@@ -6,7 +6,7 @@ import { roleGuard } from '../../middleware/role.middleware.js';
 import { validate } from '../../middleware/validate.middleware.js';
 import { paginate, buildMeta } from '../../utils/pagination.js';
 import { applyScope, isOutOfScope } from '../../utils/scope.js';
-import { getDb } from '../../config/db.js';
+import { getDb, getDualDb } from '../../config/db.js';
 import { AppError } from '../../utils/AppError.js';
 import { enqueueNotification } from '../notification/notification.service.js';
 import { emitTo } from '../../socket/index.js';
@@ -17,9 +17,9 @@ const r = Router();
 r.use(roleGuard(['pm']));
 
 // Bookings live in the `jobs` collection (v3). PM dashboards/actions all hit it.
-const jobsCol = () => getDb().collection('jobs');
-const usersCol = () => getDb().collection('users');
-const servicesCol = () => getDb().collection('services');
+const jobsCol = () => getDualDb().collection('jobs');
+const usersCol = () => getDualDb().collection('users');
+const servicesCol = () => getDualDb().collection('services');
 
 async function loadOwnedJob(id, pmId) {
   let oid;
@@ -386,7 +386,7 @@ r.post('/bookings/:id/assign-resource', validate(assignResourceSchema), asyncHan
 // Booking-scoped group chat (customer + PM + resource + admin).
 // Uses the existing `chat` collection but with a stable bookingId-based room.
 // ---------------------------------------------------------------------------
-const chatCol = () => getDb().collection('chat');
+const chatCol = () => getDualDb().collection('chat');
 
 function bookingRoomId(bookingId) { return `booking_${String(bookingId)}`; }
 
