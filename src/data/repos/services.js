@@ -50,6 +50,18 @@ function fromPgRow(row) {
 
 // ── Reads ──────────────────────────────────────────────────────────
 
+// findAll — every service, active or not. Used by the strict-repo
+// proxy in dualCollection.js when callers iterate via the collection
+// API. listActive() remains the preferred entry point for the public
+// catalogue route.
+export async function findAll() {
+  if (readsFromPg()) {
+    const rows = await getPg().select().from(servicesTable).orderBy(asc(servicesTable.sortOrder), desc(servicesTable.createdAt));
+    return rows.map(fromPgRow);
+  }
+  return await mongoCol().find({}).sort({ sortOrder: 1, createdAt: -1 }).toArray();
+}
+
 export async function listActive() {
   if (readsFromPg()) {
     const rows = await getPg()

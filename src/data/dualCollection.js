@@ -49,6 +49,13 @@ import { getPgPool } from '../db/postgres.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
+// Lightweight repeat of db.js's mongoDisabled() check — duplicated to
+// avoid a circular import with src/config/db.js.
+function mongoIsDisabled() {
+  const u = String(env.MONGO_URI || '').trim().toLowerCase();
+  return !u || u === 'disabled' || u === 'skip' || u === 'none';
+}
+
 // Indexed extracted columns. When a filter targets one of these names, we
 // match against the column directly (fast, indexed). Anything else lives
 // in the JSONB `data` column.
@@ -69,13 +76,17 @@ const COL_MAP = {
 
 // Strict-schema tables have explicit columns (no generic `data` JSONB).
 // dualCol's translator assumes the generic mirror schema, so for these
-// tables we keep reads on Mongo and let the typed repos in
-// src/data/repos/*.js handle Postgres routing where it actually applies.
+// tables we proxy through the typed repos in src/data/repos/*.js
+// instead of running JSONB-style queries against the wrong shape.
 const STRICT_SCHEMA_TABLES = new Set([
   'countries', 'currencies', 'services', 'users', 'sessions',
 ]);
 
 function pgDriverEnabled(table) {
+  // Strict tables go through their typed-repo proxy below — never the
+  // generic JSONB query path. Returning false here is correct for the
+  // generic-doc code path; the strict proxy intercepts before the
+  // PgCursor / pgUpsert ever runs.
   if (STRICT_SCHEMA_TABLES.has(table)) return false;
   // env keys are uppercase: PG_DRIVER_BOOKINGS, PG_DRIVER_JOBS etc.
   // Tables we don't have explicit env entries for default to mongo.
@@ -268,6 +279,209 @@ class PgCursor {
   }
 }
 
+// ── Strict-table repo proxy ────────────────────────────────────────
+// When a strict-schema table is reached via getDualDb().collection(name)
+// AND Postgres is the active driver, route every Mongo-style call
+// through the typed repo. The repos already speak both Mongo and PG;
+// this proxy wires the collection API surface to repo functions.
+
+import * as countriesRepo  from './repos/countries.js';
+import * as currenciesRepo from './repos/currencies.js';
+import * as servicesRepo   from './repos/services.js';
+import * as usersRepo      from './repos/users.js';
+import * as sessionsRepo   from './repos/sessions.js';
+
+const STRICT_REPOS = {
+  countries:  countriesRepo,
+  currencies: currenciesRepo,
+  services:   servicesRepo,
+  users:      usersRepo,
+  sessions:   sessionsRepo,
+};
+
+// Build a Mongo-collection-shaped object backed by the typed repo.
+// We implement the subset of methods our route code actually uses;
+// anything else throws with a clear message instead of silently
+// pretending to work.
+function strictRepoProxy(table) {
+  const repo = STRICT_REPOS[table];
+  if (!repo) {
+    throw new Error(`strictRepoProxy: no repo registered for table "${table}"`);
+  }
+
+  // Filter helpers — translate Mongo-shaped { code }, { _id }, etc.
+  // into repo function calls.
+  const findOne = async (filter = {}) => {
+    if (filter._id) {
+      return repo.findById ? await repo.findById(filter._id) : null;
+    }
+    if (filter.code && repo.findByCode) return await repo.findByCode(filter.code);
+    if (filter.slug && repo.findBySlug) return await repo.findBySlug(filter.slug);
+    if (filter.mobile && repo.findByMobile) {
+      return await repo.findByMobile(filter.mobile, filter.role);
+    }
+    if (filter.email && repo.findByEmail) return await repo.findByEmail(filter.email);
+    // Last-resort: scan all and filter in JS. Fine for the rare admin
+    // endpoint that hits these tables with an exotic filter — strict
+    // tables are tiny (countries=8, currencies=3, services<100,
+    // users < a few thousand on this scale).
+    if (repo.findAll) {
+      const all = await repo.findAll();
+      return all.find((d) => matchesFilter(d, filter)) || null;
+    }
+    return null;
+  };
+
+  const find = (filter = {}, _options = {}) => {
+    let _sort = null, _skip = 0, _limit = null, _project = null;
+    const cursor = {
+      sort(spec)  { _sort = spec; return cursor; },
+      skip(n)     { _skip = Number(n) || 0; return cursor; },
+      limit(n)    { _limit = Number(n) || null; return cursor; },
+      project(p)  { _project = p; return cursor; },
+      async toArray() {
+        const all = repo.findAll ? await repo.findAll() : [];
+        let out = all.filter((d) => matchesFilter(d, filter));
+        if (_sort) {
+          const [k, dir] = Object.entries(_sort)[0] || [];
+          if (k) out.sort((a, b) => {
+            const av = a[k], bv = b[k];
+            if (av === bv) return 0;
+            return (av < bv ? -1 : 1) * (dir === -1 || dir === 'desc' ? -1 : 1);
+          });
+        }
+        if (_skip) out = out.slice(_skip);
+        if (_limit) out = out.slice(0, _limit);
+        if (_project) out = out.map((d) => projectDoc(d, _project));
+        return out;
+      },
+      async *[Symbol.asyncIterator]() {
+        for (const x of await cursor.toArray()) yield x;
+      },
+    };
+    return cursor;
+  };
+
+  return {
+    __driver: 'postgres',
+    __table: table,
+    __strictRepoProxy: true,
+    find,
+    findOne,
+    async countDocuments(filter = {}) {
+      const all = repo.findAll ? await repo.findAll() : [];
+      if (!filter || Object.keys(filter).length === 0) return all.length;
+      return all.filter((d) => matchesFilter(d, filter)).length;
+    },
+    async insertOne(doc) {
+      if (repo.insertOne) {
+        const inserted = await repo.insertOne(doc);
+        return { acknowledged: true, insertedId: inserted._id };
+      }
+      if (repo.upsertByCode && doc.code) {
+        const inserted = await repo.upsertByCode(doc);
+        return { acknowledged: true, insertedId: inserted._id };
+      }
+      if (repo.upsertByMobile && doc.mobile) {
+        const inserted = await repo.upsertByMobile(doc);
+        return { acknowledged: true, insertedId: inserted._id };
+      }
+      throw new Error(`strictRepoProxy(${table}): no insert path`);
+    },
+    async updateOne(filter, update, _options = {}) {
+      const target = await findOne(filter);
+      if (!target) return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
+      const $set = (update && update.$set) || (update && !Object.keys(update).some((k) => k.startsWith('$')) ? update : {});
+      if (repo.updateById) {
+        await repo.updateById(target._id, $set);
+        return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
+      }
+      if (repo.upsertByCode && (target.code || filter.code)) {
+        await repo.upsertByCode({ code: target.code || filter.code, ...$set });
+        return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
+      }
+      throw new Error(`strictRepoProxy(${table}): no update path`);
+    },
+    async findOneAndUpdate(filter, update, options = {}) {
+      const target = await findOne(filter);
+      const $set = (update && update.$set) || (update && !Object.keys(update).some((k) => k.startsWith('$')) ? update : {});
+      const $setOnInsert = (update && update.$setOnInsert) || {};
+      if (!target) {
+        if (options.upsert) {
+          const merged = { ...filter, ...$setOnInsert, ...$set };
+          if (repo.upsertByCode && merged.code) {
+            const out = await repo.upsertByCode(merged);
+            return { value: out, ...out };
+          }
+          if (repo.upsertByMobile && merged.mobile) {
+            const out = await repo.upsertByMobile(merged);
+            return { value: out, ...out };
+          }
+          if (repo.insertOne) {
+            const out = await repo.insertOne(merged);
+            return { value: out, ...out };
+          }
+        }
+        return { value: null };
+      }
+      if (repo.updateById) {
+        const updated = await repo.updateById(target._id, $set);
+        return { value: updated || target, ...(updated || target) };
+      }
+      return { value: target, ...target };
+    },
+    async deleteOne(_filter) {
+      throw new Error(`strictRepoProxy(${table}): delete not supported via collection API; use repo directly`);
+    },
+    aggregate() {
+      throw new Error(`strictRepoProxy(${table}): aggregate not supported on PG strict tables; query repo directly`);
+    },
+    createIndex() { return Promise.resolve(); },
+  };
+}
+
+function matchesFilter(doc, filter) {
+  for (const [k, v] of Object.entries(filter || {})) {
+    if (k === '$or') {
+      if (!Array.isArray(v) || !v.some((sub) => matchesFilter(doc, sub))) return false;
+      continue;
+    }
+    if (k === '$and') {
+      if (!Array.isArray(v) || !v.every((sub) => matchesFilter(doc, sub))) return false;
+      continue;
+    }
+    const dv = doc[k];
+    if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
+      if ('$in' in v && !v.$in.includes(dv)) return false;
+      if ('$ne' in v && dv === v.$ne) return false;
+      if ('$exists' in v && (v.$exists ? dv == null : dv != null)) return false;
+      if ('$gt'  in v && !(dv >  v.$gt))  return false;
+      if ('$gte' in v && !(dv >= v.$gte)) return false;
+      if ('$lt'  in v && !(dv <  v.$lt))  return false;
+      if ('$lte' in v && !(dv <= v.$lte)) return false;
+    } else {
+      if (dv !== v && String(dv) !== String(v)) return false;
+    }
+  }
+  return true;
+}
+
+function projectDoc(doc, projection) {
+  const includes = Object.entries(projection).filter(([_, v]) => v === 1 || v === true).map(([k]) => k);
+  const excludes = Object.entries(projection).filter(([_, v]) => v === 0 || v === false).map(([k]) => k);
+  if (includes.length) {
+    const out = { _id: doc._id };
+    for (const k of includes) out[k] = doc[k];
+    return out;
+  }
+  if (excludes.length) {
+    const out = { ...doc };
+    for (const k of excludes) delete out[k];
+    return out;
+  }
+  return doc;
+}
+
 // ── Public dualCollection() ────────────────────────────────────────
 
 import { ObjectId as _ObjectId } from 'mongodb';
@@ -323,6 +537,21 @@ function applyMongoUpdate(doc, update) {
 }
 
 export function dualCol(table) {
+  // Strict-schema tables (services, users, sessions, countries,
+  // currencies) have explicit PG columns — they can't go through the
+  // generic JSONB query path. When PG_DRIVER for one of these is on
+  // (or Mongo is disabled), proxy every collection-style call to the
+  // typed repo so callers don't have to know the difference.
+  if (STRICT_SCHEMA_TABLES.has(table)) {
+    const strictKey = `PG_DRIVER_${table.toUpperCase()}`;
+    const useStrictPg = () =>
+      (env[strictKey] === 'postgres' || mongoIsDisabled()) && !!getPgPool();
+    if (useStrictPg()) {
+      return strictRepoProxy(table);
+    }
+    // Fall through to the legacy Mongo path below.
+  }
+
   // Mongo handle is lazy — we only deref it on the Mongo branches, so
   // a Postgres-only deployment with `MONGO_URI=disabled` never throws
   // from dualCol() when the route turns out to be a PG branch.
@@ -533,7 +762,7 @@ export function dualCol(table) {
     createIndex() { return Promise.resolve(); },
 
     // Escape hatch back to native if needed
-    _mongo: mongoCol,
+    _mongo: mongoColLazy,
   };
 }
 

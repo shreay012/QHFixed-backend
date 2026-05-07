@@ -25,7 +25,11 @@ export async function connectDb() {
   if (db) return db;
   if (mongoDisabled()) {
     logger.warn(
-      'MONGO_URI disabled — running Postgres-only. Skipping Mongo connection, indexes, and seeds.',
+      'MONGO_URI disabled — running Postgres-only. Skipping Mongo connection.',
+    );
+    // Still seed canonical countries into PG so admin overrides work.
+    await seedCountriesPg().catch((err) =>
+      logger.warn({ err: err.message }, 'PG country seed failed (non-fatal)'),
     );
     return null;
   }
@@ -100,23 +104,21 @@ export function getDb() {
  */
 let _dualColFn = null;
 export function getDualDb() {
-  if (!db) throw new Error('DB not connected');
+  // No throw on missing Mongo — when MONGO_URI=disabled, dualCol()
+  // routes everything to the strict repo proxy or PG-direct paths.
   return {
     collection: (name) => {
-      // Lazy ESM import (cached after first call) to avoid the circular
-      // dependency that `dualCol` → `getDb` would create at module-load time.
       if (!_dualColFn) {
-        // Dynamic import returns a Promise — but we need sync here.
-        // Use a tiny synchronous bootstrap: load via the already-resolved
-        // module graph if available, else fall back to native Mongo.
         try {
           // eslint-disable-next-line no-undef
           _dualColFn = globalThis.__QH_DUAL_COL__;
         } catch { /* ignored */ }
       }
       if (_dualColFn) return _dualColFn(name);
-      // Fallback (initial calls before bootstrap completes): direct Mongo.
-      return db.collection(name);
+      // Pre-bootstrap fallback: go direct to Mongo if available, else
+      // throw a clear error rather than letting nil-deref propagate.
+      if (db) return db.collection(name);
+      throw new Error(`getDualDb: dualCol not bound yet and Mongo disabled (table=${name})`);
     },
   };
 }
@@ -130,6 +132,22 @@ export function bindDualCol(fn) {
 
 export async function closeDb() {
   if (client) await client.close();
+}
+
+/**
+ * PG-backed country seed — used when Mongo is disabled. Routes
+ * through the typed repo so the same canonical config lands in the
+ * countries table.
+ */
+async function seedCountriesPg() {
+  const { upsertByCode } = await import('../data/repos/countries.js');
+  const docs = buildCountrySeedDocuments();
+  for (const doc of docs) {
+    await upsertByCode(doc).catch((err) =>
+      logger.warn({ err: err.message, code: doc.code }, 'pg country seed: per-row failure (continuing)'),
+    );
+  }
+  logger.info({ count: docs.length }, 'countries seeded into Postgres');
 }
 
 /**
