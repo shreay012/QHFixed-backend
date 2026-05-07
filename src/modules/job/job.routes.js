@@ -219,7 +219,7 @@ r.post('/', roleGuard(['user', 'admin', 'guest']), asyncHandler(async (req, res)
           const map = {
             INVALID_SLOT: ['VALIDATION_ERROR', 'Invalid slot', 422],
             INVALID_DATE: ['VALIDATION_ERROR', 'Invalid date', 422],
-            OUT_OF_WINDOW: ['VALIDATION_ERROR', 'Slot is outside the 7-day booking window', 422],
+            OUT_OF_WINDOW: ['VALIDATION_ERROR', 'Selected date is outside the booking window', 422],
             WEEKEND: ['SLOT_UNAVAILABLE', 'Weekends are not available', 409],
             HOLIDAY: ['SLOT_UNAVAILABLE', 'Selected day is a holiday', 409],
             TOO_LATE: ['SLOT_UNAVAILABLE', 'Slot starts in less than 1 hour', 409],

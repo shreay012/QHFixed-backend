@@ -7,7 +7,10 @@ export const FIXED_SLOTS = [
   { startTime: '14:00', endTime: '18:00', label: '2:00 PM – 6:00 PM' },
 ];
 
-export const SCHEDULING_DAYS = 7;       // today + next 6
+// Booking window — how many days ahead a customer can pick a slot.
+// Default 90 (3 months out); override per-env via SCHEDULING_DAYS=N.
+// 7 was the old testing default and rejected ~every demo booking.
+export const SCHEDULING_DAYS = Number(process.env.SCHEDULING_DAYS) || 90;
 export const DEFAULT_SLOT_CAPACITY = 5; // resources per slot
 export const MIN_LEAD_MINUTES = 60;     // same-day slot must have ≥ 1 hour remaining
 export const INSTANT_LEAD_MINUTES = 10; // instant = next 10 min
