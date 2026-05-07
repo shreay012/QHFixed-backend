@@ -41,16 +41,15 @@ services:
 
   api:
     build: .
-    env_file: .env
+    # Reads .env.docker (gitignored). Copy from .env.docker.example to
+    # bootstrap. Dev-only — production deploys (Render/Neon) inject env
+    # via the platform UI, not files.
+    env_file: .env.docker
     ports: ["4000:4000"]
     depends_on:
       mongo:    { condition: service_healthy }
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-    environment:
-      MONGO_URI: mongodb://mongo:27017
-      REDIS_URL: redis://redis:6379
-      PG_URL: postgres://quickhire:quickhire@postgres:5432/quickhire
 
 volumes:
   mongo_data: {}
