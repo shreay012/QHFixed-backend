@@ -16,9 +16,10 @@ services:
       POSTGRES_DB: quickhire
       POSTGRES_USER: quickhire
       POSTGRES_PASSWORD: quickhire
-    # Port 5433 on host so it doesn't clash with a Homebrew Postgres on 5432.
+    # Host port 5434 — avoids clash with Homebrew PG (5432) and any
+    # EnterpriseDB PG (5433) that may be installed alongside.
     # Inside the compose network, services connect via "postgres:5432".
-    ports: ["5433:5432"]
+    ports: ["5434:5432"]
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Auto-restore the dump bundle on first boot (only when pg_data is empty).
@@ -40,16 +41,15 @@ services:
 
   api:
     build: .
-    env_file: .env
+    # Reads .env.docker (gitignored). Copy from .env.docker.example to
+    # bootstrap. Dev-only — production deploys (Render/Neon) inject env
+    # via the platform UI, not files.
+    env_file: .env.docker
     ports: ["4000:4000"]
     depends_on:
       mongo:    { condition: service_healthy }
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-    environment:
-      MONGO_URI: mongodb://mongo:27017
-      REDIS_URL: redis://redis:6379
-      PG_URL: postgres://quickhire:quickhire@postgres:5432/quickhire
 
 volumes:
   mongo_data: {}
