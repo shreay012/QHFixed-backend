@@ -88,10 +88,14 @@ function pgDriverEnabled(table) {
   // generic-doc code path; the strict proxy intercepts before the
   // PgCursor / pgUpsert ever runs.
   if (STRICT_SCHEMA_TABLES.has(table)) return false;
-  // env keys are uppercase: PG_DRIVER_BOOKINGS, PG_DRIVER_JOBS etc.
-  // Tables we don't have explicit env entries for default to mongo.
+  // Read PG_DRIVER_* from process.env, not the zod-validated `env`
+  // object — the schema only declares the 9 originally-migrated
+  // tables, so flags for newer tables (geo_pricing, tickets, chat,
+  // audit_logs, …) get stripped at validation time and the route
+  // crashes with "DB not connected" when MONGO_URI is disabled.
   const key = `PG_DRIVER_${table.toUpperCase()}`;
-  return env[key] === 'postgres' && !!getPgPool();
+  const val = process.env[key] ?? env[key];
+  return val === 'postgres' && !!getPgPool();
 }
 
 function isInsertable(table) {
