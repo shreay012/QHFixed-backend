@@ -270,8 +270,63 @@ class PgCursor {
 
 // ── Public dualCollection() ────────────────────────────────────────
 
+import { ObjectId as _ObjectId } from 'mongodb';
+
+// Generic UPSERT into the shared `_id, data JSONB, ...indexed cols`
+// schema. Used by every PG-backed write below.
+async function pgUpsert(pool, table, doc) {
+  const row = extractRow(doc);
+  await pool.query(
+    `INSERT INTO ${table} (_id, data, country, status, user_id, pm_id, resource_id, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (_id) DO UPDATE SET data=EXCLUDED.data, country=EXCLUDED.country,
+       status=EXCLUDED.status, user_id=EXCLUDED.user_id, pm_id=EXCLUDED.pm_id,
+       resource_id=EXCLUDED.resource_id, updated_at=EXCLUDED.updated_at;`,
+    [row._id, JSON.stringify(row.data), row.country, row.status, row.user_id, row.pm_id, row.resource_id, row.created_at, row.updated_at],
+  );
+}
+
+// Apply a Mongo-style $set / $inc / $push update to a doc in-place
+// for the PG-direct path. Covers the operators we actually use; falls
+// back to replacing fields for unknown operators.
+function applyMongoUpdate(doc, update) {
+  const next = { ...doc };
+  if (!update || typeof update !== 'object') return next;
+  if (update.$set) Object.assign(next, update.$set);
+  if (update.$unset) for (const k of Object.keys(update.$unset)) delete next[k];
+  if (update.$inc) {
+    for (const [k, v] of Object.entries(update.$inc)) {
+      next[k] = (Number(next[k]) || 0) + Number(v);
+    }
+  }
+  if (update.$push) {
+    for (const [k, v] of Object.entries(update.$push)) {
+      const arr = Array.isArray(next[k]) ? next[k] : [];
+      next[k] = arr.concat(v);
+    }
+  }
+  if (update.$addToSet) {
+    for (const [k, v] of Object.entries(update.$addToSet)) {
+      const arr = Array.isArray(next[k]) ? next[k] : [];
+      if (!arr.includes(v)) next[k] = arr.concat(v);
+      else next[k] = arr;
+    }
+  }
+  // No-op operator: $currentDate — set to now().
+  if (update.$currentDate) {
+    for (const k of Object.keys(update.$currentDate)) next[k] = new Date();
+  }
+  // If neither set nor any op given, treat the whole object as a doc replacement.
+  const noOp = !Object.keys(update).some((k) => k.startsWith('$'));
+  if (noOp) return { ...doc, ...update };
+  return next;
+}
+
 export function dualCol(table) {
-  const mongoCol = () => getMongo().collection(table);
+  // Mongo handle is lazy — we only deref it on the Mongo branches, so
+  // a Postgres-only deployment with `MONGO_URI=disabled` never throws
+  // from dualCol() when the route turns out to be a PG branch.
+  const mongoColLazy = () => getMongo().collection(table);
   const pgPool = () => getPgPool();
   const useP = () => pgDriverEnabled(table);
   const dual = () => dualWriteEnabled(table);
@@ -282,7 +337,7 @@ export function dualCol(table) {
 
     find(filter = {}, options = {}) {
       if (useP()) return new PgCursor(table, filter, options);
-      return mongoCol().find(filter, options);
+      return mongoColLazy().find(filter, options);
     },
 
     async findOne(filter = {}, options = {}) {
@@ -292,7 +347,7 @@ export function dualCol(table) {
         const arr = await cursor.toArray();
         return arr[0] || null;
       }
-      return mongoCol().findOne(filter, options);
+      return mongoColLazy().findOne(filter, options);
     },
 
     async countDocuments(filter = {}) {
@@ -304,89 +359,136 @@ export function dualCol(table) {
         const r = await pgPool().query(sql, values);
         return r.rows[0].c;
       }
-      return mongoCol().countDocuments(filter);
+      return mongoColLazy().countDocuments(filter);
     },
 
     async insertOne(doc) {
-      // Always Mongo first — source of truth.
-      const m = await mongoCol().insertOne(doc);
+      // PG-direct branch — Mongo never written.
+      if (useP() && pgPool()) {
+        const id = doc._id || new _ObjectId();
+        const inserted = { ...doc, _id: id };
+        await pgUpsert(pgPool(), table, inserted);
+        return { acknowledged: true, insertedId: id };
+      }
+      // Mongo branch (default for tables without PG driver). Optionally
+      // dual-write to PG when PG_DUAL_WRITE lists this table.
+      const m = await mongoColLazy().insertOne(doc);
       const inserted = { ...doc, _id: m.insertedId };
       if (dual() && pgPool()) {
-        const row = extractRow(inserted);
-        pgPool().query(
-          `INSERT INTO ${table} (_id, data, country, status, user_id, pm_id, resource_id, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-           ON CONFLICT (_id) DO UPDATE SET data=EXCLUDED.data, country=EXCLUDED.country,
-             status=EXCLUDED.status, user_id=EXCLUDED.user_id, pm_id=EXCLUDED.pm_id,
-             resource_id=EXCLUDED.resource_id, updated_at=EXCLUDED.updated_at;`,
-          [row._id, JSON.stringify(row.data), row.country, row.status, row.user_id, row.pm_id, row.resource_id, row.created_at, row.updated_at],
-        ).catch((err) => logger.error({ err: err.message, table }, 'pg dual-write insertOne failed'));
+        pgUpsert(pgPool(), table, inserted)
+          .catch((err) => logger.error({ err: err.message, table }, 'pg dual-write insertOne failed'));
       }
       return m;
     },
 
     async insertMany(docs) {
-      const m = await mongoCol().insertMany(docs);
-      if (dual() && pgPool()) {
-        // Best-effort, sequential. Not used on hot paths.
+      if (useP() && pgPool()) {
+        const out = [];
         for (const d of docs) {
-          const row = extractRow(d);
-          await pgPool().query(
-            `INSERT INTO ${table} (_id, data, country, status, user_id, pm_id, resource_id, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (_id) DO NOTHING;`,
-            [row._id, JSON.stringify(row.data), row.country, row.status, row.user_id, row.pm_id, row.resource_id, row.created_at, row.updated_at],
-          ).catch((err) => logger.error({ err: err.message, table }, 'pg dual-write insertMany failed'));
+          const id = d._id || new _ObjectId();
+          out.push(id);
+          await pgUpsert(pgPool(), table, { ...d, _id: id });
+        }
+        return { acknowledged: true, insertedCount: out.length, insertedIds: out };
+      }
+      const m = await mongoColLazy().insertMany(docs);
+      if (dual() && pgPool()) {
+        for (const d of docs) {
+          await pgUpsert(pgPool(), table, d)
+            .catch((err) => logger.error({ err: err.message, table }, 'pg dual-write insertMany failed'));
         }
       }
       return m;
     },
 
     async updateOne(filter, update, options = {}) {
-      // Mongo always; PG dual-write reads back the updated doc + upserts.
-      const m = await mongoCol().updateOne(filter, update, options);
+      if (useP() && pgPool()) {
+        // Read-modify-write so we can apply Mongo-style operators
+        // ($set / $inc / $push) without translating each to SQL.
+        const cursor = new PgCursor(table, filter);
+        cursor.limit(1);
+        const arr = await cursor.toArray();
+        let target = arr[0];
+        if (!target) {
+          // Upsert path
+          if (options.upsert) {
+            target = applyMongoUpdate({ ...filter }, update);
+            if (!target._id) target._id = new _ObjectId();
+            await pgUpsert(pgPool(), table, target);
+            return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedId: target._id };
+          }
+          return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
+        }
+        const updated = applyMongoUpdate(target, update);
+        await pgUpsert(pgPool(), table, updated);
+        return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
+      }
+      const m = await mongoColLazy().updateOne(filter, update, options);
       if (dual() && pgPool()) {
-        const updated = await mongoCol().findOne(filter);
+        const updated = await mongoColLazy().findOne(filter);
         if (updated) {
-          const row = extractRow(updated);
-          pgPool().query(
-            `INSERT INTO ${table} (_id, data, country, status, user_id, pm_id, resource_id, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-             ON CONFLICT (_id) DO UPDATE SET data=EXCLUDED.data, country=EXCLUDED.country,
-               status=EXCLUDED.status, user_id=EXCLUDED.user_id, pm_id=EXCLUDED.pm_id,
-               resource_id=EXCLUDED.resource_id, updated_at=EXCLUDED.updated_at;`,
-            [row._id, JSON.stringify(row.data), row.country, row.status, row.user_id, row.pm_id, row.resource_id, row.created_at, row.updated_at],
-          ).catch((err) => logger.error({ err: err.message, table }, 'pg dual-write updateOne failed'));
+          pgUpsert(pgPool(), table, updated)
+            .catch((err) => logger.error({ err: err.message, table }, 'pg dual-write updateOne failed'));
         }
       }
       return m;
     },
 
     async updateMany(filter, update, options = {}) {
-      const m = await mongoCol().updateMany(filter, update, options);
+      if (useP() && pgPool()) {
+        const cursor = new PgCursor(table, filter);
+        const arr = await cursor.toArray();
+        for (const target of arr) {
+          await pgUpsert(pgPool(), table, applyMongoUpdate(target, update));
+        }
+        return { acknowledged: true, matchedCount: arr.length, modifiedCount: arr.length };
+      }
+      const m = await mongoColLazy().updateMany(filter, update, options);
       // No PG dual-write for bulk updates — too expensive. Mirror script
       // periodically reconciles instead.
       return m;
     },
 
     async findOneAndUpdate(filter, update, options = {}) {
-      const m = await mongoCol().findOneAndUpdate(filter, update, options);
+      if (useP() && pgPool()) {
+        const cursor = new PgCursor(table, filter);
+        cursor.limit(1);
+        const arr = await cursor.toArray();
+        let target = arr[0];
+        if (!target) {
+          if (options.upsert) {
+            target = applyMongoUpdate({ ...filter }, update);
+            if (!target._id) target._id = new _ObjectId();
+            await pgUpsert(pgPool(), table, target);
+            return { value: target, ...target };
+          }
+          return { value: null };
+        }
+        const updated = applyMongoUpdate(target, update);
+        await pgUpsert(pgPool(), table, updated);
+        const returnAfter = options.returnDocument === 'after' || options.returnNewDocument === true;
+        const out = returnAfter ? updated : target;
+        return { value: out, ...out };
+      }
+      const m = await mongoColLazy().findOneAndUpdate(filter, update, options);
       const result = m.value || m;
       if (dual() && pgPool() && result) {
-        const row = extractRow(result);
-        pgPool().query(
-          `INSERT INTO ${table} (_id, data, country, status, user_id, pm_id, resource_id, created_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-           ON CONFLICT (_id) DO UPDATE SET data=EXCLUDED.data, country=EXCLUDED.country,
-             status=EXCLUDED.status, user_id=EXCLUDED.user_id, pm_id=EXCLUDED.pm_id,
-             resource_id=EXCLUDED.resource_id, updated_at=EXCLUDED.updated_at;`,
-          [row._id, JSON.stringify(row.data), row.country, row.status, row.user_id, row.pm_id, row.resource_id, row.created_at, row.updated_at],
-        ).catch((err) => logger.error({ err: err.message, table }, 'pg dual-write findOneAndUpdate failed'));
+        pgUpsert(pgPool(), table, result)
+          .catch((err) => logger.error({ err: err.message, table }, 'pg dual-write findOneAndUpdate failed'));
       }
       return m;
     },
 
     async deleteOne(filter) {
-      const m = await mongoCol().deleteOne(filter);
+      if (useP() && pgPool()) {
+        paramIdx = 0;
+        const values = [];
+        const where = buildWhere(filter, values);
+        if (!where) return { acknowledged: true, deletedCount: 0 };
+        const r = await pgPool().query(`DELETE FROM ${table} WHERE ${where};`, values);
+        return { acknowledged: true, deletedCount: r.rowCount };
+      }
+      const m = await mongoColLazy().deleteOne(filter);
       if (dual() && pgPool()) {
         paramIdx = 0;
         const values = [];
@@ -400,7 +502,15 @@ export function dualCol(table) {
     },
 
     async deleteMany(filter) {
-      const m = await mongoCol().deleteMany(filter);
+      if (useP() && pgPool()) {
+        paramIdx = 0;
+        const values = [];
+        const where = buildWhere(filter, values);
+        if (!where) return { acknowledged: true, deletedCount: 0 };
+        const r = await pgPool().query(`DELETE FROM ${table} WHERE ${where};`, values);
+        return { acknowledged: true, deletedCount: r.rowCount };
+      }
+      const m = await mongoColLazy().deleteMany(filter);
       if (dual() && pgPool()) {
         paramIdx = 0;
         const values = [];
@@ -413,10 +523,11 @@ export function dualCol(table) {
       return m;
     },
 
-    // Aggregate stays on Mongo even when PG driver is on. Translating
-    // pipelines is the hardest part of migration; for now we keep them
-    // on Mongo and migrate hot ones individually as raw SQL queries.
-    aggregate(pipeline, options) { return mongoCol().aggregate(pipeline, options); },
+    // Aggregate stays on Mongo. PG-only deploys can't use aggregate()
+    // until each pipeline is hand-translated to SQL — none of the hot
+    // paths use it on tables that flip to PG, so this is fine for the
+    // first cutover.
+    aggregate(pipeline, options) { return mongoColLazy().aggregate(pipeline, options); },
 
     // No-op — DDL is managed by pg-mirror-all.js / pg-migrate.js.
     createIndex() { return Promise.resolve(); },

@@ -79,12 +79,27 @@ export async function findById(idLike) {
   return await mongoCol().findOne({ _id: new ObjectId(idStr) });
 }
 
-// ── Writes (always Mongo + optional Postgres dual-write) ──────────
+// ── Writes ─────────────────────────────────────────────────────────
+// When PG_DRIVER_SERVICES=postgres, writes go directly to PG (Mongo
+// untouched — production can run with MONGO_URI=disabled). Otherwise
+// the legacy Mongo-first + optional PG dual-write path is preserved.
 
 export async function insertOne(doc) {
-  const r = await mongoCol().insertOne({ ...doc, createdAt: doc.createdAt || new Date(), updatedAt: new Date() });
-  const inserted = { ...doc, _id: r.insertedId };
+  const now = new Date();
+  const withTs = { ...doc, createdAt: doc.createdAt || now, updatedAt: now };
 
+  if (readsFromPg()) {
+    const id = withTs._id ? String(withTs._id) : new ObjectId().toString();
+    const inserted = { ...withTs, _id: id };
+    await getPg()
+      .insert(servicesTable)
+      .values(toPgRow(inserted))
+      .onConflictDoUpdate({ target: servicesTable._id, set: toPgUpdateSet(inserted) });
+    return inserted;
+  }
+
+  const r = await mongoCol().insertOne(withTs);
+  const inserted = { ...withTs, _id: r.insertedId };
   if (dualWritesEnabled()) {
     getPg()
       .insert(servicesTable)
@@ -96,6 +111,17 @@ export async function insertOne(doc) {
 }
 
 export async function updateById(idLike, $set) {
+  if (readsFromPg()) {
+    const idStr = String(idLike);
+    const merged = { ...$set, _id: idStr, updatedAt: new Date() };
+    await getPg()
+      .insert(servicesTable)
+      .values(toPgRow(merged))
+      .onConflictDoUpdate({ target: servicesTable._id, set: toPgUpdateSet(merged) });
+    const rows = await getPg().select().from(servicesTable).where(eq(servicesTable._id, idStr)).limit(1);
+    return fromPgRow(rows[0]);
+  }
+
   const id = typeof idLike === 'string' ? new ObjectId(idLike) : idLike;
   const result = await mongoCol().findOneAndUpdate(
     { _id: id },

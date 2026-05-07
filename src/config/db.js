@@ -6,8 +6,29 @@ import { buildCountrySeedDocuments } from './country.config.js';
 let client;
 let db;
 
+// Marker values that explicitly opt OUT of Mongo. Use any of these to
+// run the API on Postgres alone:
+//   MONGO_URI=disabled  (or 'skip' / 'none' / '')
+// When opted out, dualCol() routes everything to Postgres and the
+// strict-table repos (countries, currencies, services, …) write
+// directly to PG.
+function mongoDisabled() {
+  const u = String(env.MONGO_URI || '').trim().toLowerCase();
+  return !u || u === 'disabled' || u === 'skip' || u === 'none';
+}
+
+export function isMongoEnabled() {
+  return !mongoDisabled() && !!db;
+}
+
 export async function connectDb() {
   if (db) return db;
+  if (mongoDisabled()) {
+    logger.warn(
+      'MONGO_URI disabled — running Postgres-only. Skipping Mongo connection, indexes, and seeds.',
+    );
+    return null;
+  }
   // Pool sizes are tuned for 1M-user scale where each Node instance
   // handles many thousand concurrent connections. Default of 50 caused
   // waitQueueTimeoutMS rejections under load; 200 holds steady on the

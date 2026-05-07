@@ -6,7 +6,10 @@ const schema = z.object({
   PORT: z.coerce.number().default(4000),
   ALLOWED_ORIGINS: z.string().default('*'),
 
-  MONGO_URI: z.string(),
+  // MONGO_URI is OPTIONAL. Set to 'disabled' (or leave unset) to run
+  // the API on Postgres alone — connectDb() skips Mongo and dualCol()
+  // / strict-table repos route everything to PG.
+  MONGO_URI: z.string().optional().default('disabled'),
   MONGO_DB: z.string().default('quickhire'),
   // Connection pool sizing — see db.js. Optional; defaults are tuned for
   // ~1M-user / 50K-booking scale. Lower these for shared-cluster dev.

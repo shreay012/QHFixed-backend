@@ -55,6 +55,20 @@ export async function findByCode(code) {
 }
 
 export async function upsertByCode(doc) {
+  if (readsFromPg()) {
+    const merged = {
+      ...doc,
+      createdAt: doc.createdAt || new Date(),
+      updatedAt: new Date(),
+    };
+    await getPg()
+      .insert(currenciesTable)
+      .values(toPgRow(merged))
+      .onConflictDoUpdate({ target: currenciesTable.code, set: toPgUpdateSet(merged) });
+    const rows = await getPg().select().from(currenciesTable).where(eq(currenciesTable.code, doc.code)).limit(1);
+    return fromPgRow(rows[0]) || merged;
+  }
+
   const r = await mongoCol().findOneAndUpdate(
     { code: doc.code },
     { $set: { ...doc, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
