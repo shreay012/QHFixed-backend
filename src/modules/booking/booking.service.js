@@ -174,7 +174,7 @@ export async function getById(id, user) {
     return b;
   }
   // Fallback: id may belong to the `jobs` collection (v3 booking flow writes there).
-  const { getDb } = await import('../../config/db.js');
+  const { getDualDb } = await import('../../config/db.js');
   let jobId;
   try { jobId = new ObjectId(String(id)); } catch { return null; }
   const job = await getDualDb().collection('jobs').findOne({ _id: jobId });
@@ -202,7 +202,7 @@ export async function getById(id, user) {
 
 export async function listForCustomer({ userId, statuses, page, pageSize }) {
   const p = paginate({ page, pageSize });
-  const { getDb } = await import('../../config/db.js');
+  const { getDualDb } = await import('../../config/db.js');
   const jobsCol = getDualDb().collection('jobs');
   const servicesCol = getDualDb().collection('services');
 
