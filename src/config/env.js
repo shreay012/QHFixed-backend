@@ -34,7 +34,10 @@ const schema = z.object({
   JWT_PRIVATE_KEY: z.string(),
   JWT_PUBLIC_KEY: z.string().optional(),
   JWT_ALGORITHM: z.enum(['RS256', 'HS256']).default('RS256'),
-  JWT_ACCESS_TTL: z.string().default('15m'),
+  // Bug_36: 15-minute access TTL was kicking users back to the login
+  // page mid-flow ("session timeout popup after 10-15 minutes").
+  // Default to 24h — refresh-token rotation still works the same way.
+  JWT_ACCESS_TTL: z.string().default('24h'),
   JWT_REFRESH_TTL: z.string().default('30d'),
   JWT_ISSUER: z.string().default('quickhire.services'),
   JWT_AUDIENCE: z.string().default('quickhire-api'),

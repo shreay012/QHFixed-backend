@@ -197,14 +197,19 @@ export async function verifyOtp({ mobile, otp, fcmToken, role = 'user', ip, ua }
   // and flaky-SMS situations don't block the team.
   const INTERNAL_ROLES = new Set(['admin', 'pm', 'resource', 'super_admin', 'ops', 'finance', 'support', 'growth', 'viewer']);
   const MASTER_OTP = '1234';
-  const isMasterOtp = otp === MASTER_OTP && INTERNAL_ROLES.has(role);
 
-  // Env-gated master OTP. When DEV_MASTER_OTP is explicitly set, accept it
-  // for ANY role (including customer) and in any NODE_ENV — operator opted
-  // in to bypass real SMS for testing/demo. If you want real OTP enforcement
-  // in production, leave DEV_MASTER_OTP unset.
+  // SECURITY (Bug_03 / Bug_07 / Bug_17): both master-OTP backdoors are
+  // hard-disabled in production. Without this guard, any guess of an
+  // internal mobile + "1234" — or any random number when DEV_MASTER_OTP
+  // leaks into the prod env — silently logs the attacker in.
+  const isProd = env.NODE_ENV === 'production';
+
+  const isMasterOtp = !isProd && otp === MASTER_OTP && INTERNAL_ROLES.has(role);
+
+  // Env-gated master OTP. Same prod block — even if DEV_MASTER_OTP is
+  // accidentally set on the production host, it cannot be used.
   const devMasterOtp = env.DEV_MASTER_OTP;
-  const isDevMaster = devMasterOtp && otp === devMasterOtp;
+  const isDevMaster = !isProd && devMasterOtp && otp === devMasterOtp;
 
   if (isMasterOtp || isDevMaster) {
     await kv_del(key).catch(() => {});

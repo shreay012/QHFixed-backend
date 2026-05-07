@@ -141,8 +141,18 @@ export async function buildAvailability({ serviceId } = {}) {
   }
 
   // Instant: current time within an active slot AND that slot has remaining capacity
+  // Bug_30: FIXED_SLOTS are defined in IST (09:00-13:00, 14:00-18:00).
+  // Production servers run in UTC, so `now.getHours()` returned UTC
+  // hours and "instant booking" wrongly stayed available past 18:00 IST
+  // (= 12:30 UTC). Compute current minutes in the IST timezone via
+  // Intl.DateTimeFormat — works regardless of where the host is.
   let instant = { available: false, slot: null, reason: 'No active slot right now' };
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const istParts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now);
+  const istHour = Number(istParts.find((p) => p.type === 'hour')?.value || now.getHours());
+  const istMinute = Number(istParts.find((p) => p.type === 'minute')?.value || now.getMinutes());
+  const currentMinutes = istHour * 60 + istMinute;
   const todayStr = ymd(today);
   const activeSlot = FIXED_SLOTS.find((s) => {
     const [sh, sm] = s.startTime.split(':').map(Number);

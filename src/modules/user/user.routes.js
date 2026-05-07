@@ -46,8 +46,18 @@ r.put('/profile',
       update.avatarUrl = `https://${env.S3_BUCKET_CHAT}.s3.${env.AWS_REGION}.amazonaws.com/${key}`;
     }
 
+    // Bug_33: re-login asks signup again — was caused by dotted-key
+    // 'meta.isProfileComplete' getting written as a top-level column
+    // when the user table runs on Postgres (JSONB doesn't accept
+    // dotted notation in $set). Read existing meta, merge, write
+    // the full object so it nests correctly.
+    let existingMeta = {};
+    try {
+      const existing = await usersCol().findOne({ _id: new ObjectId(req.user.id) });
+      existingMeta = (existing && existing.meta) || {};
+    } catch { /* fall through with empty meta */ }
     if (data.name && data.email) {
-      update['meta.isProfileComplete'] = true;
+      update.meta = { ...existingMeta, isProfileComplete: true };
     }
 
     let r2;
