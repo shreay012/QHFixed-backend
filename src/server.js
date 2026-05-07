@@ -1,4 +1,5 @@
 // Sentry must init before any other imports that could throw
+// Push-pipeline verify: 2026-05-07 — confirms gitlab remote receives commits.
 import { initSentry } from './config/sentry.js';
 initSentry();
 
