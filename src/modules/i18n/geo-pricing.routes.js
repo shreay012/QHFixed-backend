@@ -39,19 +39,34 @@ async function invalidateServiceCachesFor(serviceId) {
 }
 
 /* ─── Public: get price for a service in caller's country ──── */
-r.get('/price/:serviceId', asyncHandler(async (req, res) => {
+// Accepts ObjectId (24-hex) OR slug ('ai-engineers'). Frontend uses slug
+// on the service-detail page before the user has clicked through —
+// rejecting that with VALIDATION_ERROR breaks the price preview.
+r.get('/price/:serviceIdOrSlug', asyncHandler(async (req, res) => {
   const country = req.geo?.country || req.query.country || 'IN';
-  const serviceId = toObjectId(req.params.serviceId);
+  const raw = String(req.params.serviceIdOrSlug || '').trim();
 
-  // Try country-specific pricing first
-  const geo = await geoPricingCol().findOne({ serviceId, country });
+  // Resolve to a service: ObjectId path first, slug fallback.
+  let svc = null;
+  if (/^[0-9a-fA-F]{24}$/.test(raw)) {
+    svc = await getDualDb().collection('services').findOne(
+      { _id: toObjectId(raw) },
+      { projection: { _id: 1, hourlyRate: 1, pricing: 1 } },
+    );
+  }
+  if (!svc) {
+    svc = await getDualDb().collection('services').findOne(
+      { slug: raw.toLowerCase() },
+      { projection: { _id: 1, hourlyRate: 1, pricing: 1 } },
+    );
+  }
+  if (!svc) throw new AppError('RESOURCE_NOT_FOUND', 'Service not found', 404);
+
+  // Country-specific override wins if present.
+  const geo = await geoPricingCol().findOne({ serviceId: svc._id, country });
   if (geo) {
     return res.json({ success: true, data: { country, currency: geo.currency, basePrice: geo.basePrice, source: 'geo_override' } });
   }
-
-  // Fallback to service's default price
-  const svc = await getDualDb().collection('services').findOne({ _id: serviceId }, { projection: { hourlyRate: 1, pricing: 1 } });
-  if (!svc) throw new AppError('RESOURCE_NOT_FOUND', 'Service not found', 404);
 
   const basePrice = svc.hourlyRate || svc.pricing?.hourly || 0;
   res.json({ success: true, data: { country, currency: req.geo?.currency || 'INR', basePrice, source: 'default' } });

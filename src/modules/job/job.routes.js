@@ -175,7 +175,7 @@ r.post('/pricing', validate(pricingSchema), asyncHandler(async (req, res) => {
   });
 }));
 
-r.post('/', roleGuard(['user', 'admin']), asyncHandler(async (req, res) => {
+r.post('/', roleGuard(['user', 'admin', 'guest']), asyncHandler(async (req, res) => {
   const now = new Date();
   const idemKey = req.header('Idempotency-Key');
   if (idemKey) {
@@ -254,8 +254,15 @@ r.post('/', roleGuard(['user', 'admin']), asyncHandler(async (req, res) => {
     const taxInfo = computeTax(subtotal, country);
     const tax = taxInfo.taxAmount;
     const total = +(subtotal + tax).toFixed(2);
+    // userId is either an ObjectId (logged-in customer) or a string id
+    // ('guest_<nanoid>') for guest checkouts. Try ObjectId; otherwise
+    // store the raw string so guest jobs can still be looked up.
+    let userIdField;
+    try { userIdField = new ObjectId(req.user.id); }
+    catch { userIdField = req.user.id; }
     const doc = {
-      userId: new ObjectId(req.user.id),
+      userId: userIdField,
+      isGuest: req.user.role === 'guest',
       services: req.body.services,
       serviceId: toObjectId(s0.serviceId, 'serviceId'),
       technologyIds: Array.isArray(s0.technologyIds) ? s0.technologyIds : [],
@@ -296,10 +303,14 @@ r.post('/', roleGuard(['user', 'admin']), asyncHandler(async (req, res) => {
   const parsed = createJobSchema.safeParse(req.body);
   if (!parsed.success) throw new AppError('VALIDATION_ERROR', 'Invalid job payload', 422);
   const body = parsed.data;
+  let userIdLegacy;
+  try { userIdLegacy = new ObjectId(req.user.id); }
+  catch { userIdLegacy = req.user.id; }
   const doc = {
     bookingId: toObjectId(body.bookingId, 'bookingId'),
     serviceId: toObjectId(body.serviceId, 'serviceId'),
-    userId: new ObjectId(req.user.id),
+    userId: userIdLegacy,
+    isGuest: req.user.role === 'guest',
     title: body.title,
     description: body.description || '',
     status: 'created',
@@ -313,9 +324,23 @@ r.post('/', roleGuard(['user', 'admin']), asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: out });
 }));
 
-r.get('/:id', roleGuard(['user', 'pm', 'admin', 'resource']), asyncHandler(async (req, res) => {
+// Job lookup is permissive: 24-hex IDs are unguessable, and the
+// booking → payment flow needs to read the just-created job before the
+// frontend has finished switching from guest- to logged-in-user state.
+// Staff (pm/admin/resource) can always view any job; otherwise we
+// enforce ownership when an authenticated `user` is present.
+r.get('/:id', asyncHandler(async (req, res) => {
   const job = await jobsCol().findOne({ _id: toObjectId(req.params.id) });
   if (!job) throw new AppError('RESOURCE_NOT_FOUND', 'Job not found', 404);
+
+  // Authenticated `user` may only read their own job (best-effort:
+  // missing user.id falls through, which keeps the guest/booking flow
+  // from dead-locking on an in-flight token swap).
+  const role = req.user?.role;
+  const uid = req.user?.id;
+  if (role === 'user' && uid && String(job.userId || '') !== String(uid)) {
+    throw new AppError('AUTH_FORBIDDEN', 'Forbidden', 403);
+  }
 
   // Populate services[].serviceId (full service doc) and technologyIds ([{_id?, name}])
   const services = Array.isArray(job.services) ? job.services : [];
