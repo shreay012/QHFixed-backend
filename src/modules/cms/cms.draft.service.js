@@ -16,6 +16,27 @@ import { getPg } from '../../db/postgres.js';
 import { cmsDrafts, cmsPublications } from '../../db/schema.js';
 import { AppError } from '../../utils/AppError.js';
 import { recordAudit } from '../audit/audit.service.js';
+import { logger } from '../../config/logger.js';
+
+async function notify(userId, type, title, body, data = {}) {
+  if (!userId) return;
+  try {
+    const { enqueueNotification } = await import('../notification/notification.service.js');
+    await enqueueNotification({ userId: String(userId), type, title, body, data });
+  } catch (err) {
+    logger.warn({ err, userId, type }, 'cms notify failed');
+  }
+}
+
+// Pulls all super_admin user ids — used to notify approvers when a
+// draft hits 'pending'. Cached locally for the request lifecycle would
+// be nice but the volume is low enough this is fine.
+async function getSuperAdminIds(pg) {
+  const { users } = await import('../../db/schema.js');
+  const { eq } = await import('drizzle-orm');
+  const rows = await pg.select({ id: users._id }).from(users).where(eq(users.role, 'super_admin'));
+  return rows.map((r) => r.id);
+}
 
 const VALID_TYPES = new Set([
   'translations', 'services', 'tech', 'legal', 'pricing', 'banner', 'faq', 'email_template',
@@ -51,6 +72,17 @@ export async function createDraft(req, { type, scope, key, payload, status = 'dr
     resourceType: 'cms_draft', resourceId: row._id, country: row.scope,
     after: { type, scope: row.scope, key, status },
   });
+  // Fan out a notification to every super_admin when an editor submits
+  // for approval. Save-as-draft is silent (the editor is still working).
+  if (status === 'pending') {
+    const ids = await getSuperAdminIds(pg).catch(() => []);
+    await Promise.all(ids.map((uid) => notify(
+      uid, 'cms_draft_submitted',
+      'CMS draft awaiting review',
+      `${type} / ${row.scope} / ${key} — submitted by ${req.user.role}.`,
+      { draftId: row._id, type, scope: row.scope, key },
+    )));
+  }
   return row;
 }
 
@@ -102,6 +134,10 @@ export async function approve(req, draftId, note = null) {
     before: { status: 'pending' },
     after:  { status: 'approved', publicationVersion: nextVersion },
   });
+  notify(draft.authorId, 'cms_draft_approved',
+    'Your CMS draft was approved',
+    `${draft.type} / ${draft.scope} / ${draft.key} is now live as v${nextVersion}.`,
+    { draftId: draft._id, version: nextVersion });
   return { draft: { ...draft, status: 'approved' }, publication: pub };
 }
 
@@ -125,6 +161,10 @@ export async function reject(req, draftId, note) {
     resourceId: draft._id, country: draft.scope,
     before: { status: 'pending' }, after: { status: 'rejected' },
   });
+  notify(draft.authorId, 'cms_draft_rejected',
+    'Your CMS draft was rejected',
+    `${draft.type} / ${draft.scope} / ${draft.key} — ${note}`,
+    { draftId: draft._id, note });
   return { ...draft, status: 'rejected' };
 }
 
