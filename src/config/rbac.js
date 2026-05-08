@@ -75,9 +75,14 @@ export const PERMS = {
   TICKET_READ:     [ROLES.SUPER_ADMIN, ROLES.COUNTRY_ADMIN, ROLES.ADMIN, ROLES.OPS, ROLES.SUPPORT, ROLES.VIEWER],
   TICKET_WRITE:    [ROLES.SUPER_ADMIN, ROLES.COUNTRY_ADMIN, ROLES.ADMIN, ROLES.OPS, ROLES.SUPPORT],
 
-  // CMS / growth — global; country_admin does NOT edit CMS to avoid cross-country content drift
+  // CMS / growth — Phase 2: country_admin can author DRAFTS for their
+  // scope (pricing/banner/faq/legal-variant). They still cannot
+  // approve/publish — only super_admin holds CMS_APPROVE. Global types
+  // (translations/services/tech) are still effectively super_admin
+  // because country_admin's scope is restricted to their country.
   CMS_READ:        [ROLES.SUPER_ADMIN, ROLES.COUNTRY_ADMIN, ROLES.ADMIN, ROLES.GROWTH, ROLES.VIEWER],
-  CMS_WRITE:       [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.GROWTH],
+  CMS_WRITE:       [ROLES.SUPER_ADMIN, ROLES.COUNTRY_ADMIN, ROLES.ADMIN, ROLES.GROWTH],
+  CMS_APPROVE:     [ROLES.SUPER_ADMIN],
 
   // Promo codes
   PROMO_READ:      [ROLES.SUPER_ADMIN, ROLES.COUNTRY_ADMIN, ROLES.ADMIN, ROLES.GROWTH, ROLES.FINANCE, ROLES.VIEWER],
