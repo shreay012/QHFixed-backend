@@ -1340,4 +1340,27 @@ r.put('/cms/:key',
   }),
 );
 
+// Audit-log read for the country-admin audit dashboard. Filtered by
+// scope so country_admin only sees their country's entries; super_admin
+// without ?asCountry= sees everything.
+r.get('/audit', permGuard(PERMS.AUDIT_READ), asyncHandler(async (req, res) => {
+  const { getPg } = await import('../../db/postgres.js');
+  const pg = getPg();
+  const { auditLogsV2 } = await import('../../db/schema.js');
+  const { desc, eq, and } = await import('drizzle-orm');
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+  let scopeCountry = null;
+  if (req.scope?.mode === 'country' || req.scope?.mode === 'country-as') {
+    scopeCountry = req.scope.filter?.country || req.scope.asCountry || null;
+  }
+  // super_admin without asCountry sees global; otherwise narrow.
+  const baseSel = pg.select().from(auditLogsV2);
+  const where = scopeCountry ? eq(auditLogsV2.country, scopeCountry) : undefined;
+  const rows = where
+    ? await baseSel.where(where).orderBy(desc(auditLogsV2.createdAt)).limit(limit)
+    : await baseSel.orderBy(desc(auditLogsV2.createdAt)).limit(limit);
+  res.json({ success: true, data: { items: rows } });
+}));
+
 export default r;
