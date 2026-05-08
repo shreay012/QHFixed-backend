@@ -18,6 +18,7 @@ import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { getSchedulingConfig, setSchedulingConfig } from '../availability/availability.service.js';
 import { PERMS } from '../../config/rbac.js';
+import { recordAudit } from '../audit/audit.service.js';
 
 const r = Router();
 // All admin-namespace roles may enter; individual routes narrow via permGuard()
@@ -476,6 +477,14 @@ r.post('/bookings/:id/assign-pm', permGuard(PERMS.BOOKING_WRITE), validate(assig
     { $set: { pmId: pm._id, projectManager: { _id: pm._id, name: pm.name, mobile: pm.mobile }, status: 'assigned_to_pm', updatedAt: new Date() } },
   );
   const updated = await jobsCol().findOne({ _id: id });
+  recordAudit(req, {
+    action: 'BOOKING_ASSIGNED_PM',
+    resourceType: 'booking',
+    resourceId: String(id),
+    country: job.country,
+    before: { pmId: job.pmId ? String(job.pmId) : null, status: job.status },
+    after:  { pmId: String(pm._id), status: 'assigned_to_pm' },
+  });
   // Real-time socket events
   try {
     const { emitTo } = await import('../../socket/index.js');
@@ -535,6 +544,14 @@ r.post('/bookings/:id/assign-resource', permGuard(PERMS.BOOKING_WRITE), validate
     { $set: { resourceId: resource._id, assignedResource: { _id: resource._id, name: resource.name, mobile: resource.mobile }, updatedAt: new Date() } },
   );
   const updated = await jobsCol().findOne({ _id: id });
+  recordAudit(req, {
+    action: 'BOOKING_ASSIGNED_RESOURCE',
+    resourceType: 'booking',
+    resourceId: String(id),
+    country: job.country,
+    before: { resourceId: job.resourceId ? String(job.resourceId) : null },
+    after:  { resourceId: String(resource._id) },
+  });
   // Notify resource
   try {
     const { enqueueNotification } = await import('../notification/notification.service.js');

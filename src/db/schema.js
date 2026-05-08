@@ -119,5 +119,33 @@ export const sessions = pgTable('sessions', {
   expiresIdx:     index('sessions_expires_idx').on(t.expiresAt),
 }));
 
+// ── Audit: structured action log ────────────────────────────────────
+// Every admin write op (super_admin, country_admin, pm) lands here as a
+// single row with queryable columns (actor, action, resource, country)
+// plus a JSONB diff. Replaces the legacy Mongo audit_logs collection
+// for everything we ship in Phase 1+. Indexed for the two access
+// patterns we care about: "what did user X do?" and "who touched
+// resource Y in country Z?".
+export const auditLogsV2 = pgTable('audit_logs_v2', {
+  _id:           char('_id', { length: 24 }).primaryKey(),
+  actorId:       char('actor_id', { length: 24 }),
+  actorRole:     varchar('actor_role', { length: 32 }),
+  action:        varchar('action', { length: 64 }).notNull(),     // e.g. BOOKING_REASSIGNED
+  resourceType:  varchar('resource_type', { length: 32 }).notNull(),
+  resourceId:    char('resource_id', { length: 24 }),
+  country:       varchar('country', { length: 2 }),
+  before:        jsonb('before'),
+  after:         jsonb('after'),
+  ip:            varchar('ip', { length: 64 }),
+  ua:            text('ua'),
+  requestId:     varchar('request_id', { length: 64 }),
+  createdAt:     timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  actorTimeIdx:    index('audit_v2_actor_time_idx').on(t.actorId, t.createdAt),
+  resourceIdx:     index('audit_v2_resource_idx').on(t.resourceType, t.resourceId),
+  countryTimeIdx:  index('audit_v2_country_time_idx').on(t.country, t.createdAt),
+  actionTimeIdx:   index('audit_v2_action_time_idx').on(t.action, t.createdAt),
+}));
+
 // Export table list for migration scripts to enumerate.
-export const ALL_TABLES = [countries, currencies, services, users, sessions];
+export const ALL_TABLES = [countries, currencies, services, users, sessions, auditLogsV2];
