@@ -472,6 +472,14 @@ r.post('/bookings/:id/assign-pm', permGuard(PERMS.BOOKING_WRITE), validate(assig
   if (job.country && pm.country && pm.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
     throw new AppError('VALIDATION_ERROR', `PM is in ${pm.country} but booking is in ${job.country}`, 422);
   }
+  // Strict hierarchy: country_admin can only assign PMs they themselves created
+  // (parentCountryAdminId = self). Stops one country admin from poaching
+  // another admin's PMs even within the same country.
+  if (req.user?.role === 'country_admin'
+      && pm.parentCountryAdminId
+      && String(pm.parentCountryAdminId) !== String(req.user.id)) {
+    throw new AppError('AUTH_FORBIDDEN', 'PM is not in your team', 403);
+  }
   await jobsCol().updateOne(
     { _id: id },
     { $set: { pmId: pm._id, projectManager: { _id: pm._id, name: pm.name, mobile: pm.mobile }, status: 'assigned_to_pm', updatedAt: new Date() } },
@@ -525,6 +533,24 @@ r.post('/bookings/:id/assign-resource', permGuard(PERMS.BOOKING_WRITE), validate
   const { id, job } = await loadScopedBooking(req, req.params.id);
   if (job.country && resource.country && resource.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
     throw new AppError('VALIDATION_ERROR', `Resource is in ${resource.country} but booking is in ${job.country}`, 422);
+  }
+  // Strict hierarchy enforcement at assignment time:
+  //   pm role         → resource.pmId must equal self
+  //   country_admin   → resource's PM must be one of THEIR PMs
+  if (req.user?.role === 'pm'
+      && resource.pmId
+      && String(resource.pmId) !== String(req.user.id)) {
+    throw new AppError('AUTH_FORBIDDEN', 'Resource is not in your roster', 403);
+  }
+  if (req.user?.role === 'country_admin' && resource.pmId) {
+    const pmDoc = await usersCol().findOne(
+      { _id: resource.pmId, role: 'pm' },
+      { projection: { parentCountryAdminId: 1 } },
+    );
+    if (pmDoc?.parentCountryAdminId
+        && String(pmDoc.parentCountryAdminId) !== String(req.user.id)) {
+      throw new AppError('AUTH_FORBIDDEN', "Resource belongs to another admin's PM", 403);
+    }
   }
 
   // Prevent double-booking: reject if resource already has an active assignment.
@@ -1484,18 +1510,50 @@ r.post('/tickets/:id/message',
 );
 
 /* Admin: PM/Resource list aliases used by FE pickers */
-r.get('/pms-list', asyncHandler(async (_req, res) => {
+// Dropdowns used in "Assign PM / Assign Resource" UIs. Strict hierarchy:
+//   super_admin     → all PMs / all resources
+//   country_admin   → only PMs created BY them (parentCountryAdminId = self)
+//                     and resources whose PM is in that set
+//   pm              → only THEIR resources (pmId = self)
+// This makes the dropdown match the assignment endpoints' guard: a country_admin
+// in IN literally cannot pick an AE PM by mistake.
+r.get('/pms-list', asyncHandler(async (req, res) => {
+  const baseFilter = { role: 'pm', deletedAt: { $exists: false } };
+  // Optional country query filter for super_admin: ?country=DE
+  if (req.query.country) baseFilter.country = String(req.query.country).toUpperCase();
+  if (req.user?.role === 'country_admin') {
+    baseFilter.parentCountryAdminId = new ObjectId(req.user.id);
+  }
+  const filter = applyScope(baseFilter, req);
   const items = await usersCol().find(
-    { role: 'pm', deletedAt: { $exists: false } },
-    { projection: { name: 1, mobile: 1, email: 1, specialization: 1 } },
+    filter,
+    { projection: { name: 1, mobile: 1, email: 1, specialization: 1, country: 1 } },
   ).toArray();
   res.json({ success: true, data: items });
 }));
 
-r.get('/resources-list', asyncHandler(async (_req, res) => {
+r.get('/resources-list', asyncHandler(async (req, res) => {
+  const baseFilter = { role: 'resource', deletedAt: { $exists: false } };
+  if (req.query.country) baseFilter.country = String(req.query.country).toUpperCase();
+  // Filter by a specific PM's roster (used after assign-pm step to pick a resource)
+  if (req.query.pmId) {
+    try { baseFilter.pmId = new ObjectId(String(req.query.pmId)); } catch {}
+  }
+  if (req.user?.role === 'pm') {
+    // PM only sees their own resources
+    baseFilter.pmId = new ObjectId(req.user.id);
+  } else if (req.user?.role === 'country_admin') {
+    // Country admin sees resources under PMs they created
+    const myPms = await usersCol().find(
+      { role: 'pm', parentCountryAdminId: new ObjectId(req.user.id) },
+      { projection: { _id: 1 } },
+    ).toArray();
+    baseFilter.pmId = { $in: myPms.map((p) => p._id) };
+  }
+  const filter = applyScope(baseFilter, req);
   const items = await usersCol().find(
-    { role: 'resource', deletedAt: { $exists: false } },
-    { projection: { name: 1, mobile: 1, email: 1, skills: 1 } },
+    filter,
+    { projection: { name: 1, mobile: 1, email: 1, skills: 1, country: 1, pmId: 1 } },
   ).toArray();
   res.json({ success: true, data: items });
 }));
