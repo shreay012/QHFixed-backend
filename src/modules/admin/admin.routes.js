@@ -673,7 +673,16 @@ const serviceSchema = z.object({
   // compatibility with any older payloads or external imports.
   notIncluded:  z.array(I18nStringSchema).optional().default([]),
   hourlyRate:   z.union([z.number(), z.string()]).transform((v) => Number(v) || 0),
-  imageUrl:     z.string().url().optional().or(z.literal('')).default(''),
+  // imageUrl accepts: empty string, an absolute URL (https://…), OR a
+  // site-relative path (/foo.svg, /uploads/…). The strict .url() check
+  // was rejecting relative paths the admin uploader returns by default.
+  imageUrl:     z.string()
+    .refine(
+      (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+      { message: 'Must be a URL (https://…) or a site-relative path (/…)' },
+    )
+    .optional()
+    .default(''),
   // FAQ question/answer can each be a plain string (legacy) or an i18n
   // object so admins can localise FAQs alongside name/description.
   faqs:         z.array(z.object({
