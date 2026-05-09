@@ -940,33 +940,137 @@ makeStaffRoutes('resource', '/resources');
  * country admins. Listing is already covered by /admin/users?role=country_admin
  * (gated by USER_READ which includes super_admin).
  * ───────────────────────────────────────────────────────────── */
+const VALID_COUNTRIES = ['IN', 'AE', 'DE', 'AU', 'US'];
+
+// Multi-country support: a single country_admin can be granted access
+// to several countries (e.g. an APAC admin handling AU+IN). The first
+// element of managedCountries seeds the user's primary `country` field
+// because country-scope middleware reads from there for "default" view.
 const countryAdminSchema = z.object({
   name: z.string().min(2).max(100),
   mobile: z.string().regex(/^\+?\d{10,15}$/, 'mobile must be 10–15 digits, optional + prefix'),
   email: z.string().email().optional().or(z.literal('')).default(''),
-  country: z.enum(['IN', 'AE', 'DE', 'AU', 'US']),
+  managedCountries: z.array(z.enum(VALID_COUNTRIES)).min(1).max(VALID_COUNTRIES.length),
 }).strict();
 
 r.post('/country-admins', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(countryAdminSchema), asyncHandler(async (req, res) => {
-  const { name, mobile, email, country } = req.body;
+  const { name, mobile, email, managedCountries } = req.body;
   const existing = await usersCol().findOne({ mobile, role: 'country_admin' });
   if (existing) throw new AppError('RESOURCE_CONFLICT', 'Country admin with this mobile already exists', 409);
-  const dup = await usersCol().findOne({ role: 'country_admin', country });
-  if (dup) throw new AppError('RESOURCE_CONFLICT', `A country admin already exists for ${country}`, 409);
   const now = new Date();
   const doc = {
     role: 'country_admin',
-    country,
+    country: managedCountries[0],     // primary country drives default scope
     name,
     mobile,
     email: email || '',
-    managedCountries: [country],
+    managedCountries,
+    parentCountryAdminId: req.user.id, // back-ref to the super_admin who created
     meta: { isProfileComplete: true, status: 'active' },
     createdAt: now,
     updatedAt: now,
   };
   const ins = await usersCol().insertOne(doc);
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_CREATED',
+    resourceType: 'user', resourceId: String(ins.insertedId),
+    after: { mobile, managedCountries, name },
+  });
   res.status(201).json({ success: true, data: { _id: ins.insertedId, ...doc } });
+}));
+
+// List all country admins. Super_admin sees everyone; country_admin
+// only sees themselves (so they can't enumerate peers).
+r.get('/country-admins', permGuard(PERMS.USER_READ), asyncHandler(async (req, res) => {
+  const filter = { role: 'country_admin' };
+  if (req.user.role === 'country_admin') filter._id = new ObjectId(req.user.id);
+  const items = await usersCol().find(filter)
+    .project({ name: 1, mobile: 1, email: 1, country: 1, managedCountries: 1, meta: 1, createdAt: 1, deletedAt: 1 })
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.json({ success: true, data: items });
+}));
+
+// Patch — rename, swap email, change managed countries. Mobile is
+// immutable because it's the login identity; use a separate endpoint
+// if rotation is ever needed.
+const countryAdminPatchSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  email: z.string().email().optional().or(z.literal('')),
+  managedCountries: z.array(z.enum(VALID_COUNTRIES)).min(1).optional(),
+}).strict();
+
+r.patch('/country-admins/:id', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(countryAdminPatchSchema), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  const before = await usersCol().findOne({ _id: id, role: 'country_admin' });
+  if (!before) throw new AppError('RESOURCE_NOT_FOUND', 'Country admin not found', 404);
+  const update = { updatedAt: new Date() };
+  if (req.body.name) update.name = req.body.name;
+  if (req.body.email !== undefined) update.email = req.body.email;
+  if (req.body.managedCountries) {
+    update.managedCountries = req.body.managedCountries;
+    update.country = req.body.managedCountries[0];   // primary follows the array head
+  }
+  await usersCol().updateOne({ _id: id }, { $set: update });
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_UPDATED',
+    resourceType: 'user', resourceId: String(id),
+    before: { name: before.name, email: before.email, managedCountries: before.managedCountries },
+    after:  update,
+  });
+  res.json({ success: true });
+}));
+
+// Soft-deactivate — sets meta.status='deactivated'. Existing JWTs
+// stay valid until expiry; the auth middleware checks status on every
+// request and rejects deactivated users with 401.
+r.post('/country-admins/:id/deactivate', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  await usersCol().updateOne(
+    { _id: id, role: 'country_admin' },
+    { $set: { 'meta.status': 'deactivated', deactivatedAt: new Date(), updatedAt: new Date() } },
+  );
+  // Hard-revoke all live sessions so they're booted out immediately.
+  await getDualDb().collection('sessions').updateMany(
+    { userId: id }, { $set: { revoked: true, updatedAt: new Date() } },
+  );
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_DEACTIVATED',
+    resourceType: 'user', resourceId: String(id),
+    after: { status: 'deactivated' },
+  });
+  res.json({ success: true });
+}));
+
+r.post('/country-admins/:id/reactivate', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  await usersCol().updateOne(
+    { _id: id, role: 'country_admin' },
+    { $set: { 'meta.status': 'active', updatedAt: new Date() }, $unset: { deactivatedAt: '' } },
+  );
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_REACTIVATED',
+    resourceType: 'user', resourceId: String(id),
+    after: { status: 'active' },
+  });
+  res.json({ success: true });
+}));
+
+// Trigger an OTP send for a country_admin's mobile — useful when they
+// say "I never got my login OTP". Doesn't actually log them in; just
+// re-runs the OTP flow on their behalf.
+r.post('/country-admins/:id/resend-login', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  const user = await usersCol().findOne({ _id: id, role: 'country_admin' });
+  if (!user) throw new AppError('RESOURCE_NOT_FOUND', 'Country admin not found', 404);
+  const { sendOtp } = await import('../auth/auth.service.js');
+  await sendOtp({ mobile: user.mobile, role: 'country_admin' });
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_LOGIN_OTP_RESENT',
+    resourceType: 'user', resourceId: String(id),
+    after: { mobile: user.mobile },
+  });
+  res.json({ success: true, message: `OTP sent to ${user.mobile}` });
 }));
 
 /* ─────────────────────────────────────────────────────────────
