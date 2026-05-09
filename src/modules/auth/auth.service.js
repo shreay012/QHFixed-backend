@@ -179,6 +179,10 @@ export async function sendOtp({ mobile, role }) {
   const otp = genOtp();
   const hash = await bcrypt.hash(otp, 8);
   await kv_set(`otp:${role}:${mobile}`, hash, 'EX', env.OTP_TTL_SECONDS);
+  // Bug_46: reset the brute-force counter when a fresh OTP is issued so
+  // a previous lockout doesn't persist after the user requests a new
+  // code. The counter lives in a sibling key tied to the OTP TTL.
+  await kv_del(`otp:tries:${role}:${mobile}`).catch(() => {});
   await sendSms(mobile, `Your QuickHire OTP is ${otp}. Valid for 5 minutes.`);
   // Never log OTP in production — security + GDPR risk
   if (env.NODE_ENV !== 'production') {
@@ -197,14 +201,19 @@ export async function verifyOtp({ mobile, otp, fcmToken, role = 'user', ip, ua }
   // and flaky-SMS situations don't block the team.
   const INTERNAL_ROLES = new Set(['admin', 'pm', 'resource', 'super_admin', 'ops', 'finance', 'support', 'growth', 'viewer']);
   const MASTER_OTP = '1234';
-  const isMasterOtp = otp === MASTER_OTP && INTERNAL_ROLES.has(role);
 
-  // Env-gated master OTP. When DEV_MASTER_OTP is explicitly set, accept it
-  // for ANY role (including customer) and in any NODE_ENV — operator opted
-  // in to bypass real SMS for testing/demo. If you want real OTP enforcement
-  // in production, leave DEV_MASTER_OTP unset.
+  // SECURITY (Bug_03 / Bug_07 / Bug_17): both master-OTP backdoors are
+  // hard-disabled in production. Without this guard, any guess of an
+  // internal mobile + "1234" — or any random number when DEV_MASTER_OTP
+  // leaks into the prod env — silently logs the attacker in.
+  const isProd = env.NODE_ENV === 'production';
+
+  const isMasterOtp = !isProd && otp === MASTER_OTP && INTERNAL_ROLES.has(role);
+
+  // Env-gated master OTP. Same prod block — even if DEV_MASTER_OTP is
+  // accidentally set on the production host, it cannot be used.
   const devMasterOtp = env.DEV_MASTER_OTP;
-  const isDevMaster = devMasterOtp && otp === devMasterOtp;
+  const isDevMaster = !isProd && devMasterOtp && otp === devMasterOtp;
 
   if (isMasterOtp || isDevMaster) {
     await kv_del(key).catch(() => {});
@@ -212,11 +221,28 @@ export async function verifyOtp({ mobile, otp, fcmToken, role = 'user', ip, ua }
       logger.warn({ mobile, role, ip }, 'master OTP used');
     }
   } else {
+    // Bug_46: brute-force protection. Track wrong attempts per (role,
+    // mobile). After 5 wrong tries, invalidate the OTP entirely so the
+    // user must request a new one. Without this, an IP-rotated bot can
+    // try every 4-digit combination (10000 max) against a known mobile.
+    const triesKey = `otp:tries:${role}:${mobile}`;
+    const MAX_TRIES = 5;
     const hash = await kv_get(key);
     if (!hash) throw new AppError('AUTH_INVALID_OTP', 'OTP expired or not requested', 400);
     const ok = await bcrypt.compare(otp, hash);
-    if (!ok) throw new AppError('AUTH_INVALID_OTP', 'Invalid OTP', 400);
+    if (!ok) {
+      const tries = await kv_incr(triesKey);
+      if (tries === 1) await kv_expire(triesKey, env.OTP_TTL_SECONDS);
+      if (tries >= MAX_TRIES) {
+        await kv_del(key).catch(() => {});
+        await kv_del(triesKey).catch(() => {});
+        logger.warn({ mobile, role, ip, tries }, 'OTP brute-force lockout');
+        throw new AppError('AUTH_INVALID_OTP', 'Too many wrong attempts. Please request a new OTP.', 429);
+      }
+      throw new AppError('AUTH_INVALID_OTP', `Invalid OTP. ${MAX_TRIES - tries} attempts left.`, 400);
+    }
     await kv_del(key);
+    await kv_del(triesKey).catch(() => {});
   }
 
   const user = await repo.upsertUser({ mobile, role, fcmToken });

@@ -65,8 +65,25 @@ async function main() {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('unhandledRejection', (reason) => logger.error({ reason }, 'unhandledRejection'));
+
+  // Resilience: a transient Redis / Mongo / SDK rejection should not
+  // take the whole API down. Log + continue. The route's own try/catch
+  // (or the global error middleware) returns a 5xx to the caller; the
+  // process keeps serving every other request. Only signal-driven
+  // shutdowns terminate the process.
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ reason: reason && (reason.stack || reason.message || reason) }, 'unhandledRejection (continuing)');
+  });
   process.on('uncaughtException', (err) => {
+    // Known transient / external-service errors — log and stay up.
+    const msg = String(err?.message || err);
+    const transient =
+      /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EPIPE|max requests limit|Connection is closed|UPSTASH/i.test(msg);
+    if (transient) {
+      logger.warn({ err: msg, code: err?.code }, 'transient external-service error (continuing)');
+      return;
+    }
+    // Genuine programmer errors still warrant a graceful shutdown.
     logger.fatal({ err }, 'uncaughtException');
     shutdown('uncaughtException');
   });

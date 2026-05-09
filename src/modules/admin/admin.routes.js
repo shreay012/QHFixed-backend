@@ -6,6 +6,7 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { rateLimitSearch } from '../../middleware/rateLimit.middleware.js';
 import { getDb, getDualDb } from '../../config/db.js';
+import { ACTIVE_COUNTRY_CODES } from '../../config/country.config.js';
 import { redis } from '../../config/redis.js';
 import { clearCachePattern, deleteCacheValue, getOrSet } from '../../utils/cache.js';
 import { CACHE_KEYS } from '../../utils/cache.keys.js';
@@ -18,6 +19,7 @@ import { AppError } from '../../utils/AppError.js';
 import { toObjectId } from '../../utils/oid.js';
 import { getSchedulingConfig, setSchedulingConfig } from '../availability/availability.service.js';
 import { PERMS } from '../../config/rbac.js';
+import { recordAudit } from '../audit/audit.service.js';
 
 const r = Router();
 // All admin-namespace roles may enter; individual routes narrow via permGuard()
@@ -471,11 +473,27 @@ r.post('/bookings/:id/assign-pm', permGuard(PERMS.BOOKING_WRITE), validate(assig
   if (job.country && pm.country && pm.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
     throw new AppError('VALIDATION_ERROR', `PM is in ${pm.country} but booking is in ${job.country}`, 422);
   }
+  // Strict hierarchy: country_admin can only assign PMs they themselves created
+  // (parentCountryAdminId = self). Stops one country admin from poaching
+  // another admin's PMs even within the same country.
+  if (req.user?.role === 'country_admin'
+      && pm.parentCountryAdminId
+      && String(pm.parentCountryAdminId) !== String(req.user.id)) {
+    throw new AppError('AUTH_FORBIDDEN', 'PM is not in your team', 403);
+  }
   await jobsCol().updateOne(
     { _id: id },
     { $set: { pmId: pm._id, projectManager: { _id: pm._id, name: pm.name, mobile: pm.mobile }, status: 'assigned_to_pm', updatedAt: new Date() } },
   );
   const updated = await jobsCol().findOne({ _id: id });
+  recordAudit(req, {
+    action: 'BOOKING_ASSIGNED_PM',
+    resourceType: 'booking',
+    resourceId: String(id),
+    country: job.country,
+    before: { pmId: job.pmId ? String(job.pmId) : null, status: job.status },
+    after:  { pmId: String(pm._id), status: 'assigned_to_pm' },
+  });
   // Real-time socket events
   try {
     const { emitTo } = await import('../../socket/index.js');
@@ -517,6 +535,24 @@ r.post('/bookings/:id/assign-resource', permGuard(PERMS.BOOKING_WRITE), validate
   if (job.country && resource.country && resource.country !== job.country && req.scope?.mode !== 'global' && req.scope?.mode !== 'global-leg') {
     throw new AppError('VALIDATION_ERROR', `Resource is in ${resource.country} but booking is in ${job.country}`, 422);
   }
+  // Strict hierarchy enforcement at assignment time:
+  //   pm role         → resource.pmId must equal self
+  //   country_admin   → resource's PM must be one of THEIR PMs
+  if (req.user?.role === 'pm'
+      && resource.pmId
+      && String(resource.pmId) !== String(req.user.id)) {
+    throw new AppError('AUTH_FORBIDDEN', 'Resource is not in your roster', 403);
+  }
+  if (req.user?.role === 'country_admin' && resource.pmId) {
+    const pmDoc = await usersCol().findOne(
+      { _id: resource.pmId, role: 'pm' },
+      { projection: { parentCountryAdminId: 1 } },
+    );
+    if (pmDoc?.parentCountryAdminId
+        && String(pmDoc.parentCountryAdminId) !== String(req.user.id)) {
+      throw new AppError('AUTH_FORBIDDEN', "Resource belongs to another admin's PM", 403);
+    }
+  }
 
   // Prevent double-booking: reject if resource already has an active assignment.
   const ACTIVE_STATUSES = ['assigned_to_pm', 'in_progress', 'paused'];
@@ -535,6 +571,14 @@ r.post('/bookings/:id/assign-resource', permGuard(PERMS.BOOKING_WRITE), validate
     { $set: { resourceId: resource._id, assignedResource: { _id: resource._id, name: resource.name, mobile: resource.mobile }, updatedAt: new Date() } },
   );
   const updated = await jobsCol().findOne({ _id: id });
+  recordAudit(req, {
+    action: 'BOOKING_ASSIGNED_RESOURCE',
+    resourceType: 'booking',
+    resourceId: String(id),
+    country: job.country,
+    before: { resourceId: job.resourceId ? String(job.resourceId) : null },
+    after:  { resourceId: String(resource._id) },
+  });
   // Notify resource
   try {
     const { enqueueNotification } = await import('../notification/notification.service.js');
@@ -656,7 +700,16 @@ const serviceSchema = z.object({
   // compatibility with any older payloads or external imports.
   notIncluded:  z.array(I18nStringSchema).optional().default([]),
   hourlyRate:   z.union([z.number(), z.string()]).transform((v) => Number(v) || 0),
-  imageUrl:     z.string().url().optional().or(z.literal('')).default(''),
+  // imageUrl accepts: empty string, an absolute URL (https://…), OR a
+  // site-relative path (/foo.svg, /uploads/…). The strict .url() check
+  // was rejecting relative paths the admin uploader returns by default.
+  imageUrl:     z.string()
+    .refine(
+      (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+      { message: 'Must be a URL (https://…) or a site-relative path (/…)' },
+    )
+    .optional()
+    .default(''),
   // FAQ question/answer can each be a plain string (legacy) or an i18n
   // object so admins can localise FAQs alongside name/description.
   faqs:         z.array(z.object({
@@ -822,15 +875,32 @@ r.delete('/services/:id', permGuard(PERMS.SERVICE_WRITE), asyncHandler(async (re
  * ───────────────────────────────────────────────────────────── */
 // Strict schema — no passthrough(). Prevents injecting computed fields like `role`
 // or `meta.status` directly into the users collection via admin staff create/update.
-const staffSchema = z.object({
+// PM creation requires a parent country_admin so the routing tree is
+// always intact — every PM rolls up to a country_admin → country.
+// Resource creation requires a parent PM so booking assignments stay
+// within the (admin → PM → resource) chain.
+const pmSchema = z.object({
   name: z.string().min(2).max(200),
   mobile: z.string().regex(/^\d{10}$/, 'mobile must be 10 digits'),
   email: z.string().email().optional().or(z.literal('')).default(''),
   specialization: z.array(z.string().max(100)).optional().default([]),
   skills: z.array(z.string().max(100)).optional().default([]),
+  parentCountryAdminId: z.string().regex(/^[0-9a-f]{24}$/).optional(),
+  country: z.string().length(2).optional(),    // super_admin override
 }).strict();
+const resourceSchema = z.object({
+  name: z.string().min(2).max(200),
+  mobile: z.string().regex(/^\d{10}$/, 'mobile must be 10 digits'),
+  email: z.string().email().optional().or(z.literal('')).default(''),
+  specialization: z.array(z.string().max(100)).optional().default([]),
+  skills: z.array(z.string().max(100)).optional().default([]),
+  pmId: z.string().regex(/^[0-9a-f]{24}$/).optional(),
+  country: z.string().length(2).optional(),
+}).strict();
+const SCHEMA_BY_ROLE = { pm: pmSchema, resource: resourceSchema };
 
 const makeStaffRoutes = (role, basePath) => {
+  const staffSchema = SCHEMA_BY_ROLE[role];
   r.get(basePath, asyncHandler(async (req, res) => {
     const p = paginate(req.query);
     const baseFilter = { role, deletedAt: { $exists: false } };
@@ -866,15 +936,65 @@ const makeStaffRoutes = (role, basePath) => {
     const exists = await usersCol().findOne({ mobile: req.body.mobile });
     if (exists) throw new AppError('RESOURCE_CONFLICT', 'User with this mobile already exists', 409);
     const now = new Date();
-    // Inherit country from the creating admin's scope: a country_admin (IN)
-    // creating a new PM auto-tags the PM as country=IN. Super admin can
-    // override by sending body.country, or via ?asCountry=. country_admin's
-    // override is silently ignored to prevent cross-country pool leaks.
     const scopeCountry = req.scope?.filter?.country;
     const requestedCountry = req.body.country
       ? String(req.body.country).toUpperCase()
       : null;
-    const country = scopeCountry || requestedCountry || null;
+
+    let parentCountryAdminId = null;
+    let pmId = null;
+    let country = scopeCountry || requestedCountry || null;
+    let parentName = null;
+
+    if (role === 'pm') {
+      // PM must roll up to a country_admin. country_admin creating a PM
+      // auto-uses themselves as the parent; super_admin must specify.
+      if (req.user.role === 'country_admin') {
+        parentCountryAdminId = req.user.id;
+        country = req.user.country || country;
+      } else if (req.body.parentCountryAdminId) {
+        const parent = await usersCol().findOne({
+          _id: toObjectId(req.body.parentCountryAdminId, 'parentCountryAdminId'),
+          role: 'country_admin',
+        });
+        if (!parent) throw new AppError('VALIDATION_ERROR', 'Parent country_admin not found', 422);
+        parentCountryAdminId = String(parent._id);
+        // Country must be one the parent admin manages.
+        const managed = parent.managedCountries || [parent.country].filter(Boolean);
+        const desired = requestedCountry || managed[0];
+        if (!managed.includes(desired)) {
+          throw new AppError('VALIDATION_ERROR', `Country ${desired} not in parent admin's managedCountries`, 422);
+        }
+        country = desired;
+        parentName = parent.name;
+      } else {
+        throw new AppError('VALIDATION_ERROR', 'parentCountryAdminId required for PM', 422);
+      }
+    }
+
+    if (role === 'resource') {
+      // Resource must roll up to a PM. PM creating a resource auto-uses
+      // themselves; admin/country_admin/super_admin specify pmId.
+      const sourcePmId = req.user.role === 'pm' ? req.user.id : req.body.pmId;
+      if (!sourcePmId) throw new AppError('VALIDATION_ERROR', 'pmId required for resource', 422);
+      const pm = await usersCol().findOne({
+        _id: toObjectId(sourcePmId, 'pmId'),
+        role: 'pm',
+        deletedAt: { $exists: false },
+      });
+      if (!pm) throw new AppError('VALIDATION_ERROR', 'Parent PM not found', 422);
+      // country_admin can only attach to PMs they own.
+      if (req.user.role === 'country_admin' && pm.country !== req.user.country) {
+        throw new AppError('FORBIDDEN', 'Cannot attach resource to a PM in a different country', 403);
+      }
+      pmId = String(pm._id);
+      parentCountryAdminId = pm.parentCountryAdminId
+        ? String(pm.parentCountryAdminId)
+        : null;
+      country = pm.country;
+      parentName = pm.name;
+    }
+
     const doc = {
       role,
       name: req.body.name,
@@ -883,11 +1003,19 @@ const makeStaffRoutes = (role, basePath) => {
       specialization: req.body.specialization || [],
       skills: req.body.skills || [],
       country,
+      ...(parentCountryAdminId ? { parentCountryAdminId } : {}),
+      ...(pmId ? { pmId } : {}),
       meta: { isProfileComplete: true, status: 'active' },
       createdAt: now,
       updatedAt: now,
     };
     const ins = await usersCol().insertOne(doc);
+    recordAudit(req, {
+      action: role === 'pm' ? 'PM_CREATED' : 'RESOURCE_CREATED',
+      resourceType: 'user', resourceId: String(ins.insertedId),
+      country,
+      after: { mobile: req.body.mobile, parentCountryAdminId, pmId, country, parentName },
+    });
     res.status(201).json({ success: true, data: { _id: ins.insertedId, ...doc } });
   }));
 
@@ -923,33 +1051,140 @@ makeStaffRoutes('resource', '/resources');
  * country admins. Listing is already covered by /admin/users?role=country_admin
  * (gated by USER_READ which includes super_admin).
  * ───────────────────────────────────────────────────────────── */
+// Sourced from country.config.js (imported at top of file) — flipping a
+// country's `active: true` there is the only change needed to expand the
+// supported list.
+const VALID_COUNTRIES = ACTIVE_COUNTRY_CODES;
+
+// Multi-country support: a single country_admin can be granted access
+// to several countries (e.g. an APAC admin handling AU+IN). The first
+// element of managedCountries seeds the user's primary `country` field
+// because country-scope middleware reads from there for "default" view.
 const countryAdminSchema = z.object({
   name: z.string().min(2).max(100),
   mobile: z.string().regex(/^\+?\d{10,15}$/, 'mobile must be 10–15 digits, optional + prefix'),
   email: z.string().email().optional().or(z.literal('')).default(''),
-  country: z.enum(['IN', 'AE', 'DE', 'AU', 'US']),
+  managedCountries: z.array(z.enum(VALID_COUNTRIES)).min(1).max(VALID_COUNTRIES.length),
 }).strict();
 
 r.post('/country-admins', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(countryAdminSchema), asyncHandler(async (req, res) => {
-  const { name, mobile, email, country } = req.body;
+  const { name, mobile, email, managedCountries } = req.body;
   const existing = await usersCol().findOne({ mobile, role: 'country_admin' });
   if (existing) throw new AppError('RESOURCE_CONFLICT', 'Country admin with this mobile already exists', 409);
-  const dup = await usersCol().findOne({ role: 'country_admin', country });
-  if (dup) throw new AppError('RESOURCE_CONFLICT', `A country admin already exists for ${country}`, 409);
   const now = new Date();
   const doc = {
     role: 'country_admin',
-    country,
+    country: managedCountries[0],     // primary country drives default scope
     name,
     mobile,
     email: email || '',
-    managedCountries: [country],
+    managedCountries,
+    parentCountryAdminId: req.user.id, // back-ref to the super_admin who created
     meta: { isProfileComplete: true, status: 'active' },
     createdAt: now,
     updatedAt: now,
   };
   const ins = await usersCol().insertOne(doc);
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_CREATED',
+    resourceType: 'user', resourceId: String(ins.insertedId),
+    after: { mobile, managedCountries, name },
+  });
   res.status(201).json({ success: true, data: { _id: ins.insertedId, ...doc } });
+}));
+
+// List all country admins. Super_admin sees everyone; country_admin
+// only sees themselves (so they can't enumerate peers).
+r.get('/country-admins', permGuard(PERMS.USER_READ), asyncHandler(async (req, res) => {
+  const filter = { role: 'country_admin' };
+  if (req.user.role === 'country_admin') filter._id = new ObjectId(req.user.id);
+  const items = await usersCol().find(filter)
+    .project({ name: 1, mobile: 1, email: 1, country: 1, managedCountries: 1, meta: 1, createdAt: 1, deletedAt: 1 })
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.json({ success: true, data: items });
+}));
+
+// Patch — rename, swap email, change managed countries. Mobile is
+// immutable because it's the login identity; use a separate endpoint
+// if rotation is ever needed.
+const countryAdminPatchSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  email: z.string().email().optional().or(z.literal('')),
+  managedCountries: z.array(z.enum(VALID_COUNTRIES)).min(1).optional(),
+}).strict();
+
+r.patch('/country-admins/:id', permGuard(PERMS.COUNTRY_ADMIN_WRITE), validate(countryAdminPatchSchema), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  const before = await usersCol().findOne({ _id: id, role: 'country_admin' });
+  if (!before) throw new AppError('RESOURCE_NOT_FOUND', 'Country admin not found', 404);
+  const update = { updatedAt: new Date() };
+  if (req.body.name) update.name = req.body.name;
+  if (req.body.email !== undefined) update.email = req.body.email;
+  if (req.body.managedCountries) {
+    update.managedCountries = req.body.managedCountries;
+    update.country = req.body.managedCountries[0];   // primary follows the array head
+  }
+  await usersCol().updateOne({ _id: id }, { $set: update });
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_UPDATED',
+    resourceType: 'user', resourceId: String(id),
+    before: { name: before.name, email: before.email, managedCountries: before.managedCountries },
+    after:  update,
+  });
+  res.json({ success: true });
+}));
+
+// Soft-deactivate — sets meta.status='deactivated'. Existing JWTs
+// stay valid until expiry; the auth middleware checks status on every
+// request and rejects deactivated users with 401.
+r.post('/country-admins/:id/deactivate', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  await usersCol().updateOne(
+    { _id: id, role: 'country_admin' },
+    { $set: { 'meta.status': 'deactivated', deactivatedAt: new Date(), updatedAt: new Date() } },
+  );
+  // Hard-revoke all live sessions so they're booted out immediately.
+  await getDualDb().collection('sessions').updateMany(
+    { userId: id }, { $set: { revoked: true, updatedAt: new Date() } },
+  );
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_DEACTIVATED',
+    resourceType: 'user', resourceId: String(id),
+    after: { status: 'deactivated' },
+  });
+  res.json({ success: true });
+}));
+
+r.post('/country-admins/:id/reactivate', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  await usersCol().updateOne(
+    { _id: id, role: 'country_admin' },
+    { $set: { 'meta.status': 'active', updatedAt: new Date() }, $unset: { deactivatedAt: '' } },
+  );
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_REACTIVATED',
+    resourceType: 'user', resourceId: String(id),
+    after: { status: 'active' },
+  });
+  res.json({ success: true });
+}));
+
+// Trigger an OTP send for a country_admin's mobile — useful when they
+// say "I never got my login OTP". Doesn't actually log them in; just
+// re-runs the OTP flow on their behalf.
+r.post('/country-admins/:id/resend-login', permGuard(PERMS.COUNTRY_ADMIN_WRITE), asyncHandler(async (req, res) => {
+  const id = toObjectId(req.params.id, 'id');
+  const user = await usersCol().findOne({ _id: id, role: 'country_admin' });
+  if (!user) throw new AppError('RESOURCE_NOT_FOUND', 'Country admin not found', 404);
+  const { sendOtp } = await import('../auth/auth.service.js');
+  await sendOtp({ mobile: user.mobile, role: 'country_admin' });
+  recordAudit(req, {
+    action: 'COUNTRY_ADMIN_LOGIN_OTP_RESENT',
+    resourceType: 'user', resourceId: String(id),
+    after: { mobile: user.mobile },
+  });
+  res.json({ success: true, message: `OTP sent to ${user.mobile}` });
 }));
 
 /* ─────────────────────────────────────────────────────────────
@@ -1279,18 +1514,50 @@ r.post('/tickets/:id/message',
 );
 
 /* Admin: PM/Resource list aliases used by FE pickers */
-r.get('/pms-list', asyncHandler(async (_req, res) => {
+// Dropdowns used in "Assign PM / Assign Resource" UIs. Strict hierarchy:
+//   super_admin     → all PMs / all resources
+//   country_admin   → only PMs created BY them (parentCountryAdminId = self)
+//                     and resources whose PM is in that set
+//   pm              → only THEIR resources (pmId = self)
+// This makes the dropdown match the assignment endpoints' guard: a country_admin
+// in IN literally cannot pick an AE PM by mistake.
+r.get('/pms-list', asyncHandler(async (req, res) => {
+  const baseFilter = { role: 'pm', deletedAt: { $exists: false } };
+  // Optional country query filter for super_admin: ?country=DE
+  if (req.query.country) baseFilter.country = String(req.query.country).toUpperCase();
+  if (req.user?.role === 'country_admin') {
+    baseFilter.parentCountryAdminId = new ObjectId(req.user.id);
+  }
+  const filter = applyScope(baseFilter, req);
   const items = await usersCol().find(
-    { role: 'pm', deletedAt: { $exists: false } },
-    { projection: { name: 1, mobile: 1, email: 1, specialization: 1 } },
+    filter,
+    { projection: { name: 1, mobile: 1, email: 1, specialization: 1, country: 1 } },
   ).toArray();
   res.json({ success: true, data: items });
 }));
 
-r.get('/resources-list', asyncHandler(async (_req, res) => {
+r.get('/resources-list', asyncHandler(async (req, res) => {
+  const baseFilter = { role: 'resource', deletedAt: { $exists: false } };
+  if (req.query.country) baseFilter.country = String(req.query.country).toUpperCase();
+  // Filter by a specific PM's roster (used after assign-pm step to pick a resource)
+  if (req.query.pmId) {
+    try { baseFilter.pmId = new ObjectId(String(req.query.pmId)); } catch {}
+  }
+  if (req.user?.role === 'pm') {
+    // PM only sees their own resources
+    baseFilter.pmId = new ObjectId(req.user.id);
+  } else if (req.user?.role === 'country_admin') {
+    // Country admin sees resources under PMs they created
+    const myPms = await usersCol().find(
+      { role: 'pm', parentCountryAdminId: new ObjectId(req.user.id) },
+      { projection: { _id: 1 } },
+    ).toArray();
+    baseFilter.pmId = { $in: myPms.map((p) => p._id) };
+  }
+  const filter = applyScope(baseFilter, req);
   const items = await usersCol().find(
-    { role: 'resource', deletedAt: { $exists: false } },
-    { projection: { name: 1, mobile: 1, email: 1, skills: 1 } },
+    filter,
+    { projection: { name: 1, mobile: 1, email: 1, skills: 1, country: 1, pmId: 1 } },
   ).toArray();
   res.json({ success: true, data: items });
 }));
@@ -1322,5 +1589,125 @@ r.put('/cms/:key',
     res.json({ success: true });
   }),
 );
+
+// Hierarchy: returns the full super_admin → country_admin → PM →
+// resource tree with booking counts. Only super_admin can see the
+// global tree; country_admin gets just their slice.
+r.get('/hierarchy', permGuard(PERMS.USER_READ), asyncHandler(async (req, res) => {
+  const isCountryScoped = req.user.role === 'country_admin';
+  const baseFilter = { deletedAt: { $exists: false } };
+
+  // Pull every relevant user in one round-trip; tree-build in memory.
+  const [admins, pms, resources] = await Promise.all([
+    usersCol().find({
+      ...baseFilter, role: 'country_admin',
+      ...(isCountryScoped ? { _id: new ObjectId(req.user.id) } : {}),
+    }).project({ name: 1, mobile: 1, email: 1, country: 1, managedCountries: 1, meta: 1, createdAt: 1 })
+      .toArray(),
+    usersCol().find({
+      ...baseFilter, role: 'pm',
+      ...(isCountryScoped ? { country: req.user.country } : {}),
+    }).project({ name: 1, mobile: 1, email: 1, country: 1, parentCountryAdminId: 1, meta: 1, createdAt: 1 })
+      .toArray(),
+    usersCol().find({
+      ...baseFilter, role: 'resource',
+      ...(isCountryScoped ? { country: req.user.country } : {}),
+    }).project({ name: 1, mobile: 1, email: 1, country: 1, pmId: 1, parentCountryAdminId: 1, specialization: 1, meta: 1, createdAt: 1 })
+      .toArray(),
+  ]);
+
+  // Booking counts per PM (active = non-cancelled, non-completed).
+  const ACTIVE_STATUSES = ['assigned_to_pm', 'in_progress', 'paused', 'pending', 'confirmed'];
+  const bookingCounts = await jobsCol().aggregate([
+    { $match: { status: { $in: ACTIVE_STATUSES } } },
+    { $group: { _id: { pm: '$pmId', resource: '$resourceId' }, count: { $sum: 1 } } },
+  ]).toArray().catch(() => []);
+  const pmActive = new Map();
+  const resActive = new Map();
+  for (const b of bookingCounts) {
+    if (b._id?.pm) pmActive.set(String(b._id.pm), (pmActive.get(String(b._id.pm)) || 0) + b.count);
+    if (b._id?.resource) resActive.set(String(b._id.resource), (resActive.get(String(b._id.resource)) || 0) + b.count);
+  }
+
+  // Pivot: country_admin → [PMs] → [resources]
+  const adminById = new Map(admins.map((a) => [String(a._id), {
+    ...a, _id: String(a._id), pms: [], resourceCount: 0, activeBookings: 0,
+  }]));
+  // Index PMs under their parent country_admin (or "_unassigned" bucket).
+  const pmById = new Map();
+  for (const pm of pms) {
+    const parentId = pm.parentCountryAdminId ? String(pm.parentCountryAdminId) : null;
+    const node = {
+      ...pm, _id: String(pm._id),
+      activeBookings: pmActive.get(String(pm._id)) || 0,
+      resources: [],
+    };
+    pmById.set(node._id, node);
+    if (parentId && adminById.has(parentId)) {
+      adminById.get(parentId).pms.push(node);
+    }
+  }
+  // Index resources under their PM.
+  const orphanResources = [];
+  for (const r of resources) {
+    const node = {
+      ...r, _id: String(r._id),
+      activeBookings: resActive.get(String(r._id)) || 0,
+    };
+    const pmKey = r.pmId ? String(r.pmId) : null;
+    if (pmKey && pmById.has(pmKey)) {
+      pmById.get(pmKey).resources.push(node);
+    } else {
+      orphanResources.push(node);
+    }
+  }
+  // Roll-up counts.
+  for (const admin of adminById.values()) {
+    let resCount = 0, active = 0;
+    for (const pm of admin.pms) {
+      resCount += pm.resources.length;
+      active += pm.activeBookings;
+    }
+    admin.resourceCount = resCount;
+    admin.activeBookings = active;
+  }
+
+  res.json({
+    success: true,
+    data: {
+      countryAdmins: Array.from(adminById.values()),
+      orphanPMs: pms.filter((pm) => !pm.parentCountryAdminId).map((pm) => ({ ...pm, _id: String(pm._id) })),
+      orphanResources,
+      totals: {
+        countryAdmins: admins.length,
+        pms: pms.length,
+        resources: resources.length,
+      },
+    },
+  });
+}));
+
+// Audit-log read for the country-admin audit dashboard. Filtered by
+// scope so country_admin only sees their country's entries; super_admin
+// without ?asCountry= sees everything.
+r.get('/audit', permGuard(PERMS.AUDIT_READ), asyncHandler(async (req, res) => {
+  const { getPg } = await import('../../db/postgres.js');
+  const pg = getPg();
+  const { auditLogsV2 } = await import('../../db/schema.js');
+  const { desc, eq, and } = await import('drizzle-orm');
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+  let scopeCountry = null;
+  if (req.scope?.mode === 'country' || req.scope?.mode === 'country-as') {
+    scopeCountry = req.scope.filter?.country || req.scope.asCountry || null;
+  }
+  // super_admin without asCountry sees global; otherwise narrow.
+  const baseSel = pg.select().from(auditLogsV2);
+  const where = scopeCountry ? eq(auditLogsV2.country, scopeCountry) : undefined;
+  const rows = where
+    ? await baseSel.where(where).orderBy(desc(auditLogsV2.createdAt)).limit(limit)
+    : await baseSel.orderBy(desc(auditLogsV2.createdAt)).limit(limit);
+  res.json({ success: true, data: { items: rows } });
+}));
 
 export default r;

@@ -65,27 +65,31 @@ r.get('/me', asyncHandler(async (req, res) => {
 }));
 
 r.get('/dashboard', asyncHandler(async (req, res) => {
-  // Each PM sees their own counts → cache key is per-PM. 30s TTL keeps
-  // the dashboard feeling live while collapsing five Mongo round-trips
-  // into one Redis hit on every refresh.
+  // Bug_37 — admin would assign a PM and the booking would not show
+  // up on the PM dashboard. Two reasons:
+  //   1. The aggregate() byStatus call fell through to Mongo when
+  //      the active driver is Postgres and Mongo is disabled. The
+  //      whole endpoint then 500'd (or returned a stale cache hit).
+  //   2. The dashboard was cached for 30s per-PM with no
+  //      invalidation on assign-pm, so even when reads worked the
+  //      PM didn't see the new booking until the TTL elapsed.
+  // Fix both: derive byStatus from countDocuments calls (no
+  // aggregation), and shorten the TTL so a fresh assign is visible
+  // within seconds.
   const pmIdStr = String(req.user.id);
   const data = await getOrSet(`pm:dashboard:${pmIdStr}`, async () => {
     const pmId = new ObjectId(pmIdStr);
-    const [assigned, inProgress, paused, completed, byStatus] = await Promise.all([
+    const [assigned, inProgress, paused, completed] = await Promise.all([
       jobsCol().countDocuments({ pmId, status: 'assigned_to_pm' }),
       jobsCol().countDocuments({ pmId, status: 'in_progress' }),
       jobsCol().countDocuments({ pmId, status: 'paused' }),
       jobsCol().countDocuments({ pmId, status: 'completed' }),
-      jobsCol().aggregate([
-        { $match: { pmId } },
-        { $group: { _id: '$status', count: { $sum: 1 } } },
-      ]).toArray(),
     ]);
     return {
       assigned, inProgress, paused, completed,
-      byStatus: Object.fromEntries(byStatus.map((b) => [b._id, b.count])),
+      byStatus: { assigned_to_pm: assigned, in_progress: inProgress, paused, completed },
     };
-  }, 30);
+  }, 5);
   res.json({ success: true, data });
 }));
 

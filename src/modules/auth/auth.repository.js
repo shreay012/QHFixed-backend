@@ -1,8 +1,18 @@
-import { getDb, getDualDb } from '../../config/db.js';
+/**
+ * Auth repository — thin wrapper over the typed users + sessions repos.
+ *
+ * Both repos transparently route to Postgres or Mongo based on
+ * PG_DRIVER_USERS / PG_DRIVER_SESSIONS env flags, so this module is
+ * storage-agnostic. The in-memory fallback path remains for the dev
+ * case where neither database is reachable (e.g. fresh laptop with
+ * MONGO_URI=disabled and Postgres not yet provisioned).
+ */
 import { ObjectId } from 'mongodb';
 import { logger } from '../../config/logger.js';
+import * as usersRepo from '../../data/repos/users.js';
+import * as sessionsRepo from '../../data/repos/sessions.js';
 
-// ─── In-memory fallback store (dev, resets on restart) ───────────────────────
+// In-memory fallback (dev, resets on restart)
 const memUsers    = new Map(); // `${mobile}:${role}` → user doc
 const memSessions = new Map(); // sessionId string    → session doc
 
@@ -16,7 +26,7 @@ function memUpsertUser({ mobile, role }) {
       meta: { isProfileComplete: false, status: 'active', lastLoginAt: now },
       createdAt: now, updatedAt: now,
     });
-    logger.warn({ mobile, role }, '[MEM-DB] MongoDB unavailable — user stored in memory');
+    logger.warn({ mobile, role }, '[MEM-DB] no DB available — user stored in memory');
   } else {
     const u = memUsers.get(key);
     u.meta.lastLoginAt = now;
@@ -33,7 +43,7 @@ function memFindUserById(id) {
 
 function memCreateSession({ userId, refreshTokenHash, ip, ua, expiresAt }) {
   const _id = new ObjectId();
-  const doc = { _id, userId: new ObjectId(userId), refreshTokenHash, ip, ua, revoked: false, createdAt: new Date(), expiresAt };
+  const doc = { _id, userId: new ObjectId(String(userId)), refreshTokenHash, ip, ua, revoked: false, createdAt: new Date(), expiresAt };
   memSessions.set(String(_id), doc);
   return doc;
 }
@@ -41,72 +51,68 @@ function memCreateSession({ userId, refreshTokenHash, ip, ua, expiresAt }) {
 function memFindSession(sessionId) { return memSessions.get(String(sessionId)) || null; }
 function memRevokeSession(sessionId) { const s = memSessions.get(String(sessionId)); if (s) s.revoked = true; }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
-function col(name) {
-  try { return getDualDb().collection(name); }
-  catch { return null; }
-}
-
 // ─── exports ─────────────────────────────────────────────────────────────────
 
 export const findUserByMobile = async (mobile, role) => {
-  const c = col('users');
-  if (!c) return memUsers.get(`${mobile}:${role}`) || null;
-  try { return await c.findOne({ mobile, role }); }
-  catch { return memUsers.get(`${mobile}:${role}`) || null; }
+  try {
+    const u = await usersRepo.findByMobile(mobile, role);
+    if (u) return u;
+  } catch (e) {
+    logger.warn({ err: e.message }, '[AUTH-REPO] findByMobile failed — falling back to memory');
+  }
+  return memUsers.get(`${mobile}:${role}`) || null;
 };
 
 export const upsertUser = async ({ mobile, role, fcmToken }) => {
-  const c = col('users');
-  if (!c) return memUpsertUser({ mobile, role, fcmToken });
-
-  const now = new Date();
-  const update = {
-    $setOnInsert: { mobile, role, 'meta.isProfileComplete': false, 'meta.status': 'active', createdAt: now },
-    $set: { 'meta.lastLoginAt': now, updatedAt: now },
-  };
-  if (fcmToken) update.$addToSet = { fcmTokens: { token: fcmToken, platform: 'unknown', createdAt: now } };
-
   try {
-    const r = await c.findOneAndUpdate({ mobile, role }, update, { upsert: true, returnDocument: 'after' });
-    return r.value || r;
+    const extras = {};
+    if (fcmToken) {
+      // fcmTokens is a JSONB array in PG / Mongo array. Append-only
+      // semantics handled inside the repo's update path.
+      extras.fcmTokens = [{ token: fcmToken, platform: 'unknown', createdAt: new Date() }];
+    }
+    return await usersRepo.upsertByMobile({ mobile, role, ...extras });
   } catch (e) {
-    logger.warn({ err: e.message }, '[MEM-DB] MongoDB upsertUser failed — falling back to memory');
+    logger.warn({ err: e.message }, '[AUTH-REPO] upsertUser failed — falling back to memory');
     return memUpsertUser({ mobile, role, fcmToken });
   }
 };
 
 export const findUserById = async (id) => {
-  const c = col('users');
-  if (!c) return memFindUserById(id);
-  try { return await c.findOne({ _id: new ObjectId(id) }); }
-  catch { return memFindUserById(id); }
+  try {
+    const u = await usersRepo.findById(id);
+    if (u) return u;
+  } catch (e) {
+    logger.warn({ err: e.message }, '[AUTH-REPO] findUserById failed — falling back to memory');
+  }
+  return memFindUserById(id);
 };
 
 export const createSession = async ({ userId, refreshTokenHash, ip, ua, expiresAt }) => {
-  const c = col('sessions');
-  if (!c) return memCreateSession({ userId, refreshTokenHash, ip, ua, expiresAt });
-
-  const doc = { userId: new ObjectId(userId), refreshTokenHash, ip, ua, revoked: false, createdAt: new Date(), expiresAt };
   try {
-    const r = await c.insertOne(doc);
-    return { _id: r.insertedId, ...doc };
+    return await sessionsRepo.createOne({ userId, refreshTokenHash, ip, ua, expiresAt });
   } catch (e) {
-    logger.warn({ err: e.message }, '[MEM-DB] MongoDB createSession failed — falling back to memory');
+    logger.warn({ err: e.message }, '[AUTH-REPO] createSession failed — falling back to memory');
     return memCreateSession({ userId, refreshTokenHash, ip, ua, expiresAt });
   }
 };
 
 export const revokeSession = async (sessionId) => {
-  const c = col('sessions');
-  if (!c) { memRevokeSession(sessionId); return; }
-  try { await c.updateOne({ _id: new ObjectId(sessionId) }, { $set: { revoked: true } }); }
-  catch { memRevokeSession(sessionId); }
+  try {
+    await sessionsRepo.revokeById(sessionId);
+    return;
+  } catch (e) {
+    logger.warn({ err: e.message }, '[AUTH-REPO] revokeSession failed — falling back to memory');
+    memRevokeSession(sessionId);
+  }
 };
 
 export const findSession = async (sessionId) => {
-  const c = col('sessions');
-  if (!c) return memFindSession(sessionId);
-  try { return await c.findOne({ _id: new ObjectId(sessionId) }); }
-  catch { return memFindSession(sessionId); }
+  try {
+    const s = await sessionsRepo.findById(sessionId);
+    if (s) return s;
+  } catch (e) {
+    logger.warn({ err: e.message }, '[AUTH-REPO] findSession failed — falling back to memory');
+  }
+  return memFindSession(sessionId);
 };

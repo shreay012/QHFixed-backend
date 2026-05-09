@@ -7,3 +7,4 @@ coverage/
 dist/
 private.pem
 public.pem
+.env.docker

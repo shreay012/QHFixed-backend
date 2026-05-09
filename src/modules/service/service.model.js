@@ -4,12 +4,15 @@
 // so the "model" here is a set of Zod validators + plain helper functions.
 // Documents are stored in the `services` collection.
 //
-// Supported countries: IN · AE · DE · AU · US
+// Supported countries: derived from country.config.js (active markets only).
 
 import { z } from 'zod';
+import { ACTIVE_COUNTRY_CODES, COUNTRY_CONFIG } from '../../config/country.config.js';
 
-export const COUNTRIES = ['IN', 'AE', 'DE', 'AU', 'US'];
-export const CURRENCIES = ['INR', 'AED', 'EUR', 'AUD', 'USD'];
+// Re-export so service-pricing callers don't need a separate import. Single
+// source of truth: editing country.config.js cascades everywhere.
+export const COUNTRIES = ACTIVE_COUNTRY_CODES;
+export const CURRENCIES = ACTIVE_COUNTRY_CODES.map((c) => COUNTRY_CONFIG[c].currency);
 
 // Map locale → country fallback for the quote API when client doesn't send country.
 export const LOCALE_TO_COUNTRY = {
@@ -116,7 +119,12 @@ export const ServiceUpsertSchema = z.object({
   currency: z.string().optional(),
   minHours: z.number().optional(),
   maxHours: z.number().optional(),
-  image: z.string().url().optional(),
+  // Accept absolute URL OR site-relative path (/uploads/…). Strict
+  // .url() was rejecting the in-app uploader's relative responses.
+  image: z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   imageUrl: z.string().optional(),
   images: z.array(z.string()).optional(),
   iconUrl: z.string().optional(),

@@ -62,10 +62,17 @@ const confirmStripeSchema = z.object({
    Geo-aware: selects gateway + currency from req.geo
 ══════════════════════════════════════════════════════════════════ */
 
-r.post('/create-order', rateLimitPayment(), roleGuard(['user']), validate(createOrderSchema), asyncHandler(async (req, res) => {
+r.post('/create-order', rateLimitPayment(), roleGuard(['user', 'guest']), validate(createOrderSchema), asyncHandler(async (req, res) => {
   const { jobId, amount } = req.body;
 
-  const job = await jobsCol().findOne({ _id: toObjectId(jobId, 'jobId') });
+  // PAYMENT_JOB_LOOKUP_V2: customers sometimes pass a bookingId here
+  // (legacy frontend) or hit the endpoint mid-creation before Mongo
+  // replication has caught up. Look up by both _id and bookingId so the
+  // checkout step never dead-ends with "Job not found" on a freshly
+  // created booking.
+  const oid = toObjectId(jobId, 'jobId');
+  let job = await jobsCol().findOne({ _id: oid });
+  if (!job) job = await jobsCol().findOne({ bookingId: oid });
   if (!job) throw new AppError('RESOURCE_NOT_FOUND', 'Job not found', 404);
 
   // Geo from middleware — currency + gateway driven by user's country
@@ -132,8 +139,13 @@ r.post('/create-order', rateLimitPayment(), roleGuard(['user']), validate(create
   // sparse index on { paymentId: 1 } treats explicit null as a value —
   // multiple null docs would still 11000. Missing field is what sparse
   // actually skips.
+  // Guest checkouts have a string id ('guest_<nanoid>') — keep raw.
+  let userIdField;
+  try { userIdField = new ObjectId(req.user.id); }
+  catch { userIdField = req.user.id; }
   const insertDoc = {
-    userId: new ObjectId(req.user.id),
+    userId: userIdField,
+    isGuest: req.user.role === 'guest',
     jobId: new ObjectId(jobId),
     bookingId: job.bookingId,
     provider: order.gatewayName,

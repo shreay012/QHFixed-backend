@@ -30,21 +30,40 @@ import { logger } from './logger.js';
 
 const PUBSUB_URL = env.REDIS_URL_PUBSUB || env.REDIS_URL;
 
+// Quota-exceeded / auth-rejected errors look like transient connection
+// failures to ioredis, so the client retries forever, drowning the API
+// in cascading rejections (Upstash 500K/day cap is the typical trigger).
+// `reconnectOnError` returns false for these so the client stays in an
+// errored state and `redis.<cmd>()` rejects fast — callers fall back to
+// in-memory or skip the cache write. Recovers automatically once the
+// Redis host is healthy again (next process boot or manual reconnect).
+function reconnectOnError(err) {
+  const msg = String(err?.message || err);
+  if (/max requests limit|NOAUTH|WRONGPASS|invalid password/i.test(msg)) return false;
+  return 1;
+}
+
 export const redis = new Redis(env.REDIS_URL, {
   lazyConnect: false,
   maxRetriesPerRequest: 3,
+  enableOfflineQueue: false,
+  reconnectOnError,
 });
-export const pubClient = new Redis(PUBSUB_URL);
+export const pubClient = new Redis(PUBSUB_URL, { reconnectOnError });
 export const subClient = pubClient.duplicate();
 
-redis.on('error',     (e) => logger.error({ err: e, role: 'cache'  }, 'redis error'));
+redis.on('error',     (e) => logger.error({ err: e.message, role: 'cache'  }, 'redis error'));
 redis.on('connect',   () => logger.info({ role: 'cache' }, 'redis connected'));
-pubClient.on('error', (e) => logger.error({ err: e, role: 'pubsub' }, 'redis error'));
+pubClient.on('error', (e) => logger.error({ err: e.message, role: 'pubsub' }, 'redis error'));
 pubClient.on('connect', () => logger.info({ role: 'pubsub' }, 'redis connected'));
-subClient.on('error', (e) => logger.error({ err: e, role: 'sub'    }, 'redis error'));
+subClient.on('error', (e) => logger.error({ err: e.message, role: 'sub'    }, 'redis error'));
 
 export async function publish(channel, payload) {
-  await pubClient.publish(channel, JSON.stringify(payload));
+  await pubClient.publish(channel, JSON.stringify(payload)).catch((e) => {
+    // pubsub failures should not crash the request handler that triggered
+    // them — fan-out is best-effort.
+    logger.warn({ err: e.message, channel }, 'redis publish failed (continuing)');
+  });
 }
 
 export async function closeRedis() {

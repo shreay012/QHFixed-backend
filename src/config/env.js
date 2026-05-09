@@ -6,7 +6,10 @@ const schema = z.object({
   PORT: z.coerce.number().default(4000),
   ALLOWED_ORIGINS: z.string().default('*'),
 
-  MONGO_URI: z.string(),
+  // MONGO_URI is OPTIONAL. Set to 'disabled' (or leave unset) to run
+  // the API on Postgres alone — connectDb() skips Mongo and dualCol()
+  // / strict-table repos route everything to PG.
+  MONGO_URI: z.string().optional().default('disabled'),
   MONGO_DB: z.string().default('quickhire'),
   // Connection pool sizing — see db.js. Optional; defaults are tuned for
   // ~1M-user / 50K-booking scale. Lower these for shared-cluster dev.
@@ -31,7 +34,10 @@ const schema = z.object({
   JWT_PRIVATE_KEY: z.string(),
   JWT_PUBLIC_KEY: z.string().optional(),
   JWT_ALGORITHM: z.enum(['RS256', 'HS256']).default('RS256'),
-  JWT_ACCESS_TTL: z.string().default('15m'),
+  // Bug_36: 15-minute access TTL was kicking users back to the login
+  // page mid-flow ("session timeout popup after 10-15 minutes").
+  // Default to 24h — refresh-token rotation still works the same way.
+  JWT_ACCESS_TTL: z.string().default('24h'),
   JWT_REFRESH_TTL: z.string().default('30d'),
   JWT_ISSUER: z.string().default('quickhire.services'),
   JWT_AUDIENCE: z.string().default('quickhire-api'),

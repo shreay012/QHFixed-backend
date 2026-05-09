@@ -145,7 +145,11 @@ const i18nString = z.union([z.string().max(500), z.record(z.string().max(500))])
 const expertSchema = z.object({
   name:     z.string().max(100),
   role:     z.string().max(100).optional().default(''),
-  imageUrl: z.string().url().optional(),
+  // Accept absolute URL or site-relative path (the uploader returns /uploads/…).
+  imageUrl: z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   yearsOfExperience: z.coerce.number().int().min(0).max(80).optional(),
   verified: z.boolean().optional().default(true),
 });
@@ -199,9 +203,16 @@ const bannerSchema = z.object({
   // ── Back-compat fields (original v1 schema). Old admin clients still
   //    send these; we accept and merge them into the canonical fields
   //    below in the create/update handlers.
-  image:    z.string().url().optional(),
+  image:    z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   link:     z.string().optional(),
-  imageUrl: z.string().url().optional(),
+  // Accept absolute URL or site-relative path (the uploader returns /uploads/…).
+  imageUrl: z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   linkUrl:  z.string().optional(),
   placement: z.string().optional(),
   startsAt:  z.string().optional(),

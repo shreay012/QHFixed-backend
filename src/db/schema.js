@@ -119,5 +119,80 @@ export const sessions = pgTable('sessions', {
   expiresIdx:     index('sessions_expires_idx').on(t.expiresAt),
 }));
 
+// ── Audit: structured action log ────────────────────────────────────
+// Every admin write op (super_admin, country_admin, pm) lands here as a
+// single row with queryable columns (actor, action, resource, country)
+// plus a JSONB diff. Replaces the legacy Mongo audit_logs collection
+// for everything we ship in Phase 1+. Indexed for the two access
+// patterns we care about: "what did user X do?" and "who touched
+// resource Y in country Z?".
+export const auditLogsV2 = pgTable('audit_logs_v2', {
+  _id:           char('_id', { length: 24 }).primaryKey(),
+  actorId:       char('actor_id', { length: 24 }),
+  actorRole:     varchar('actor_role', { length: 32 }),
+  action:        varchar('action', { length: 64 }).notNull(),     // e.g. BOOKING_REASSIGNED
+  resourceType:  varchar('resource_type', { length: 32 }).notNull(),
+  resourceId:    char('resource_id', { length: 24 }),
+  country:       varchar('country', { length: 2 }),
+  before:        jsonb('before'),
+  after:         jsonb('after'),
+  ip:            varchar('ip', { length: 64 }),
+  ua:            text('ua'),
+  requestId:     varchar('request_id', { length: 64 }),
+  createdAt:     timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  actorTimeIdx:    index('audit_v2_actor_time_idx').on(t.actorId, t.createdAt),
+  resourceIdx:     index('audit_v2_resource_idx').on(t.resourceType, t.resourceId),
+  countryTimeIdx:  index('audit_v2_country_time_idx').on(t.country, t.createdAt),
+  actionTimeIdx:   index('audit_v2_action_time_idx').on(t.action, t.createdAt),
+}));
+
+// ── CMS: drafts + publications ──────────────────────────────────────
+// Two-table CMS with approval workflow. A draft is whatever an editor
+// is actively working on; a publication is a versioned snapshot of
+// what's live. The serving layer reads from cms_publications (latest
+// row per key/scope), edits land in cms_drafts. Approval = copy the
+// draft into a new publication row + mark draft 'approved'.
+//
+// Scope key is `${type}:${countryOrGlobal}:${key}` so a translation
+// for IN doesn't collide with the global default. e.g.
+//   translations:GLOBAL:home.hero.title
+//   pricing:IN:backend_developer
+//   legal:AE:terms_of_service
+export const cmsDrafts = pgTable('cms_drafts', {
+  _id:        char('_id', { length: 24 }).primaryKey(),
+  type:       varchar('type', { length: 32 }).notNull(),       // translations|services|tech|legal|pricing|banner|faq
+  scope:      varchar('scope', { length: 16 }).notNull(),      // GLOBAL or country code (IN/AE/DE)
+  key:        varchar('key', { length: 200 }).notNull(),       // identifier within type
+  payload:    jsonb('payload').notNull(),                      // the proposed value
+  status:     varchar('status', { length: 16 }).notNull().default('draft'), // draft|pending|approved|rejected
+  authorId:   char('author_id', { length: 24 }).notNull(),
+  authorRole: varchar('author_role', { length: 32 }).notNull(),
+  reviewerId: char('reviewer_id', { length: 24 }),
+  reviewNote: text('review_note'),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  createdAt:  timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  statusIdx:  index('cms_drafts_status_idx').on(t.status, t.createdAt),
+  scopeKey:   index('cms_drafts_scope_key_idx').on(t.type, t.scope, t.key),
+  authorIdx:  index('cms_drafts_author_idx').on(t.authorId),
+}));
+
+export const cmsPublications = pgTable('cms_publications', {
+  _id:        char('_id', { length: 24 }).primaryKey(),
+  type:       varchar('type', { length: 32 }).notNull(),
+  scope:      varchar('scope', { length: 16 }).notNull(),
+  key:        varchar('key', { length: 200 }).notNull(),
+  version:    integer('version').notNull(),                    // monotonic per (type,scope,key)
+  payload:    jsonb('payload').notNull(),
+  publishedBy: char('published_by', { length: 24 }).notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }).defaultNow().notNull(),
+  draftId:    char('draft_id', { length: 24 }),                // back-ref to source draft
+}, (t) => ({
+  liveIdx:     index('cms_pub_live_idx').on(t.type, t.scope, t.key, t.version),
+  publishedAt: index('cms_pub_published_at_idx').on(t.publishedAt),
+}));
+
 // Export table list for migration scripts to enumerate.
-export const ALL_TABLES = [countries, currencies, services, users, sessions];
+export const ALL_TABLES = [countries, currencies, services, users, sessions, auditLogsV2, cmsDrafts, cmsPublications];

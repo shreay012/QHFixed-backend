@@ -47,10 +47,25 @@ export async function findByCode(code) {
   return await mongoCol().findOne({ code });
 }
 
-// ── Writes (dual-write aware) ──────────────────────────────────────
+// ── Writes ─────────────────────────────────────────────────────────
+// PG-direct when reads are on PG; otherwise Mongo-first with optional
+// async dual-write to PG.
 
 export async function upsertByCode(doc) {
-  // Mongo first — always the source of truth during migration.
+  if (readsFromPg()) {
+    const merged = {
+      ...doc,
+      createdAt: doc.createdAt || new Date(),
+      updatedAt: new Date(),
+    };
+    await getPg()
+      .insert(countriesTable)
+      .values(toPgRow(merged))
+      .onConflictDoUpdate({ target: countriesTable.code, set: toPgUpdateSet(merged) });
+    const rows = await getPg().select().from(countriesTable).where(eq(countriesTable.code, doc.code)).limit(1);
+    return rows[0] || merged;
+  }
+
   const r = await mongoCol().findOneAndUpdate(
     { code: doc.code },
     { $set: { ...doc, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
@@ -58,7 +73,6 @@ export async function upsertByCode(doc) {
   );
   const result = r.value || r;
 
-  // Async dual-write to Postgres — fire and forget; failures logged.
   if (dualWritesEnabled()) {
     getPg()
       .insert(countriesTable)

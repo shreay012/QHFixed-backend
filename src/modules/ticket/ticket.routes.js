@@ -17,17 +17,26 @@ const messages = () => getDualDb().collection('ticket_messages');
 const createSchema = z.object({
   subject: z.string().min(2).max(200),
   description: z.string().min(2).max(5000),
-  bookingId: z.string().optional(),
+  // Optional. Stay liberal: accept missing, null, or empty strings —
+  // frontend sometimes sends "" when no booking is selected.
+  bookingId: z.string().optional().nullable(),
 });
 
 // POST /api/tickets/ticket
-r.post('/ticket', roleGuard(['user']), validate(createSchema), asyncHandler(async (req, res) => {
+r.post('/ticket', roleGuard(['user', 'guest']), validate(createSchema), asyncHandler(async (req, res) => {
   const now = new Date();
+  // Guest checkouts have a string id ('guest_<nanoid>') — keep raw.
+  let userIdField;
+  try { userIdField = new ObjectId(req.user.id); }
+  catch { userIdField = req.user.id; }
+  const bid = req.body.bookingId;
+  const bookingObjectId = (bid && /^[0-9a-fA-F]{24}$/.test(bid)) ? new ObjectId(bid) : null;
   const doc = {
-    userId: new ObjectId(req.user.id),
+    userId: userIdField,
+    isGuest: req.user.role === 'guest',
     subject: req.body.subject,
     description: req.body.description,
-    bookingId: req.body.bookingId ? new ObjectId(req.body.bookingId) : null,
+    bookingId: bookingObjectId,
     status: 'open',
     createdAt: now, updatedAt: now,
   };
