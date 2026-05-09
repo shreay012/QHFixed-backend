@@ -203,7 +203,10 @@ const bannerSchema = z.object({
   // ── Back-compat fields (original v1 schema). Old admin clients still
   //    send these; we accept and merge them into the canonical fields
   //    below in the create/update handlers.
-  image:    z.string().url().optional(),
+  image:    z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   link:     z.string().optional(),
   // Accept absolute URL or site-relative path (the uploader returns /uploads/…).
   imageUrl: z.string().refine(

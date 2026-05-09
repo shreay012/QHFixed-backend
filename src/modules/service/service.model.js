@@ -116,7 +116,12 @@ export const ServiceUpsertSchema = z.object({
   currency: z.string().optional(),
   minHours: z.number().optional(),
   maxHours: z.number().optional(),
-  image: z.string().url().optional(),
+  // Accept absolute URL OR site-relative path (/uploads/…). Strict
+  // .url() was rejecting the in-app uploader's relative responses.
+  image: z.string().refine(
+    (v) => v === '' || /^https?:\/\//i.test(v) || v.startsWith('/'),
+    { message: 'Must be a URL or site-relative path (/…)' },
+  ).optional(),
   imageUrl: z.string().optional(),
   images: z.array(z.string()).optional(),
   iconUrl: z.string().optional(),
