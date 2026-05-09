@@ -6,6 +6,7 @@ import { validate } from '../../middleware/validate.middleware.js';
 import { auditAdmin } from '../../middleware/audit.middleware.js';
 import { rateLimitSearch } from '../../middleware/rateLimit.middleware.js';
 import { getDb, getDualDb } from '../../config/db.js';
+import { ACTIVE_COUNTRY_CODES } from '../../config/country.config.js';
 import { redis } from '../../config/redis.js';
 import { clearCachePattern, deleteCacheValue, getOrSet } from '../../utils/cache.js';
 import { CACHE_KEYS } from '../../utils/cache.keys.js';
@@ -1050,7 +1051,10 @@ makeStaffRoutes('resource', '/resources');
  * country admins. Listing is already covered by /admin/users?role=country_admin
  * (gated by USER_READ which includes super_admin).
  * ───────────────────────────────────────────────────────────── */
-const VALID_COUNTRIES = ['IN', 'AE', 'DE', 'AU', 'US'];
+// Sourced from country.config.js (imported at top of file) — flipping a
+// country's `active: true` there is the only change needed to expand the
+// supported list.
+const VALID_COUNTRIES = ACTIVE_COUNTRY_CODES;
 
 // Multi-country support: a single country_admin can be granted access
 // to several countries (e.g. an APAC admin handling AU+IN). The first
